@@ -7,14 +7,14 @@ using Thunderbird's publicly available OAuth client IDs.
 OAUTH_CONFIGS = {
     "gmail": {
         "client_id": "406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com",  # noqa: E501
-        "client_secret": "kSmqreRr0qwBWJgbf5Y-PjSU",  # Thunderbird's public client secret
+        "client_secret": "kSmqreRr0qwBWJgbf5Y-PjSU",  # Thunderbird's client secret  # noqa: E501
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": "https://oauth2.googleapis.com/token",
         "scope": "https://mail.google.com/",
         "redirect_uri": "http://127.0.0.1:9004",  # Thunderbird uses various ports
     },
     "outlook": {
-        "client_id": "9e5f94bc-e8a4-4e73-b8be-63364c29d753",  # Thunderbird's Azure app (public client)
+        "client_id": "9e5f94bc-e8a4-4e73-b8be-63364c29d753",  # Thunderbird (public client)  # noqa: E501
         "auth_uri": "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
         "token_uri": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
         "scope": "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access",  # noqa: E501
