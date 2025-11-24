@@ -173,6 +173,8 @@ async def process_email_node(state: StreamingState) -> StreamingState:
     from .agents import (
         check_attachments,
         check_keywords,
+        check_marketing_indicators,
+        check_transactional_patterns,
         check_whitelist,
         classify_with_ai,
     )
@@ -267,7 +269,37 @@ async def process_email_node(state: StreamingState) -> StreamingState:
                 "reason": decision_obj.reason.value,
             }
 
-        # 4. If no deterministic filter matched, use AI classifier
+        # 4. Check transactional patterns (receipts, orders, shipping)
+        decision_obj = check_transactional_patterns(email, config)
+        if decision_obj:
+            logger.info(
+                f"[{decision_obj.decision.value.upper()}] Email {uid}: "
+                f"{email.subject[:50]}... -> {decision_obj.reason.value} "
+                f"(confidence: {decision_obj.confidence})"
+            )
+            return {
+                **state,
+                "operation": decision_obj.decision.value,
+                "decision": decision_obj.decision.value,
+                "reason": decision_obj.reason.value,
+            }
+
+        # 5. Check marketing indicators (unsubscribe, view in browser)
+        decision_obj = check_marketing_indicators(email, config)
+        if decision_obj:
+            logger.info(
+                f"[{decision_obj.decision.value.upper()}] Email {uid}: "
+                f"{email.subject[:50]}... -> {decision_obj.reason.value} "
+                f"(confidence: {decision_obj.confidence})"
+            )
+            return {
+                **state,
+                "operation": decision_obj.decision.value,
+                "decision": decision_obj.decision.value,
+                "reason": decision_obj.reason.value,
+            }
+
+        # 6. If no deterministic filter matched, use AI classifier
         # Note: classify_with_ai is still blocking (uses Ollama sync client)
         # We wrap it in a thread to avoid blocking the event loop
         decision_obj = await asyncio.to_thread(classify_with_ai, email, config)

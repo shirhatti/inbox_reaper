@@ -15,7 +15,9 @@ from typing import cast
 from .agents import (
     check_attachments,
     check_keywords,
+    check_marketing_indicators,
     check_sender_pattern,
+    check_transactional_patterns,
     check_whitelist,
     truncate_symmetric,
 )
@@ -196,6 +198,121 @@ def check_whitelist_node(state: GraphState) -> GraphState:
             "processed_uids": {email.uid},
             "total_processed": state.get("total_processed", 0) + 1,
             "total_kept": state.get("total_kept", 0) + 1,
+        }
+
+    # No decision made, continue to next filter
+    return state
+
+
+def check_transactional_node(state: GraphState) -> GraphState:
+    """Node: Check if email has transactional patterns.
+
+    Identifies receipts, orders, shipping notifications, and personal emails.
+    Only runs if no prior decision was made.
+
+    Args:
+        state: GraphState with current_email_uid and current_email
+
+    Returns:
+        Updated GraphState with decision (if made) or unchanged state
+    """
+    # Check if decision already made by previous node
+    if state.get("decisions"):
+        return state
+
+    current_email_dict = state.get("current_email")
+    if not current_email_dict:
+        return state
+
+    # Convert dict to Email model
+    email = email_dict_to_model(cast(dict, current_email_dict))
+
+    # Get config
+    config = Config(**state["config"])
+
+    # Run transactional check
+    decision = check_transactional_patterns(email, config)
+
+    if decision:
+        # Create decision dict for state
+        decision_dict = {
+            "email": email.model_dump(),
+            "decision": decision.decision.value,
+            "reason": decision.reason.value,
+            "confidence": decision.confidence,
+            "processed_at": decision.processed_at.isoformat(),
+        }
+
+        # Update sender stats
+        sender_stats_update = _create_sender_stats_update(
+            email.sender, decision.decision, config
+        )
+
+        return {
+            **state,
+            "decisions": [decision_dict],
+            "sender_stats": sender_stats_update,
+            "processed_uids": {email.uid},
+            "total_processed": state.get("total_processed", 0) + 1,
+            "total_kept": state.get("total_kept", 0) + 1,
+        }
+
+    # No decision made, continue to next filter
+    return state
+
+
+def check_marketing_indicators_node(state: GraphState) -> GraphState:
+    """Node: Check if email has marketing indicators.
+
+    Detects marketing emails via unsubscribe links, view-in-browser, etc.
+    Only runs if no prior decision was made.
+
+    Args:
+        state: GraphState with current_email_uid and current_email
+
+    Returns:
+        Updated GraphState with decision (if made) or unchanged state
+    """
+    # Check if decision already made by previous node
+    if state.get("decisions"):
+        return state
+
+    current_email_dict = state.get("current_email")
+    if not current_email_dict:
+        return state
+
+    # Convert dict to Email model
+    email = email_dict_to_model(cast(dict, current_email_dict))
+
+    # Get config
+    config = Config(**state["config"])
+
+    # Run marketing indicators check
+    decision = check_marketing_indicators(email, config)
+
+    if decision:
+        # Create decision dict for state
+        decision_dict = {
+            "email": email.model_dump(),
+            "decision": decision.decision.value,
+            "reason": decision.reason.value,
+            "confidence": decision.confidence,
+            "processed_at": decision.processed_at.isoformat(),
+        }
+
+        # Update sender stats
+        sender_stats_update = _create_sender_stats_update(
+            email.sender, decision.decision, config
+        )
+
+        return {
+            **state,
+            "decisions": [decision_dict],
+            "sender_stats": sender_stats_update,
+            "processed_uids": {email.uid},
+            "total_processed": state.get("total_processed", 0) + 1,
+            "total_deleted": state.get("total_deleted", 0) + 1,
+            "to_delete": [email.uid],
         }
 
     # No decision made, continue to next filter
@@ -516,6 +633,8 @@ def create_email_processing_subgraph_nodes() -> dict[str, Callable]:
         "check_attachments": check_attachments_node,
         "check_keywords": check_keywords_node,
         "check_whitelist": check_whitelist_node,
+        "check_transactional": check_transactional_node,
+        "check_marketing_indicators": check_marketing_indicators_node,
         "check_sender_pattern": check_sender_pattern_node,
         "final_decision": final_decision_node,
     }

@@ -90,6 +90,146 @@ def check_sender_pattern(
     return None
 
 
+def check_transactional_patterns(email: Email, config: Config) -> EmailDecision | None:
+    """Check if email matches transactional patterns.
+
+    Pure function that returns a KEEP decision if transactional indicators found.
+    Catches receipts, order confirmations, shipping, and personal emails.
+    """
+    text = f"{email.subject} {email.body}".lower()
+    subject_lower = email.subject.lower()
+    sender_lower = email.sender.lower()
+
+    import re
+
+    # Pattern 1: Receipt/Invoice/Order numbers in subject
+    if re.search(r"(receipt|invoice|order|confirmation)\s*#?\s*\d+", subject_lower):
+        return EmailDecision(
+            email=email,
+            decision=Decision.KEEP,
+            reason=FilterReason.KEYWORD,
+            confidence=0.98,
+        )
+
+    # Pattern 2: Transactional Amazon senders
+    amazon_transactional = [
+        "ship-confirm@amazon.com",
+        "auto-confirm@amazon.com",
+        "digital-noreply@amazon.com",
+        "order-update@amazon.com",
+    ]
+    if any(sender in sender_lower for sender in amazon_transactional):
+        return EmailDecision(
+            email=email,
+            decision=Decision.KEEP,
+            reason=FilterReason.WHITELIST,
+            confidence=0.95,
+        )
+
+    # Pattern 3: Payment keywords
+    payment_keywords = [
+        "thank you for your payment",
+        "payment received",
+        "payment confirmation",
+        "your package is arriving",
+        "has shipped",
+        "order confirmed",
+        "out for delivery",
+        "delivered to",
+    ]
+    for keyword in payment_keywords:
+        if keyword in text:
+            return EmailDecision(
+                email=email,
+                decision=Decision.KEEP,
+                reason=FilterReason.KEYWORD,
+                confidence=0.90,
+            )
+
+    # Pattern 4: Personal emails (gmail, outlook from individuals)
+    personal_domains = ["@gmail.com", "@outlook.com", "@hotmail.com", "@yahoo.com"]
+    if any(domain in sender_lower for domain in personal_domains):
+        # Check if it's not automated (no "noreply", "no-reply")
+        if "noreply" not in sender_lower and "no-reply" not in sender_lower:
+            return EmailDecision(
+                email=email,
+                decision=Decision.KEEP,
+                reason=FilterReason.WHITELIST,
+                confidence=0.85,
+            )
+
+    return None
+
+
+def check_marketing_indicators(email: Email, config: Config) -> EmailDecision | None:
+    """Check if email has marketing indicators in metadata.
+
+    Pure function that returns a DELETE decision if marketing signals found:
+    unsubscribe links, "view in browser", and tracking subdomains.
+    """
+    body_lower = email.body.lower()
+    sender_lower = email.sender.lower()
+
+    # Strong marketing signals
+    marketing_score = 0
+
+    # Signal 1: Unsubscribe link (very strong)
+    if "unsubscribe" in body_lower:
+        marketing_score += 3
+
+    # Signal 2: "View in browser" link
+    if ("view" in body_lower and "browser" in body_lower) or (
+        "click here" in body_lower and "web browser" in body_lower
+    ):
+        marketing_score += 2
+
+    # Signal 3: Marketing platform subdomain
+    import re
+
+    sender_match = re.search(r"@([^\s>]+)", sender_lower)
+    if sender_match:
+        domain = sender_match.group(1)
+
+        # e.domain.com or email.domain.com patterns
+        if (
+            domain.startswith("e.")
+            or domain.startswith("email.")
+            or domain.startswith("click.")
+            or domain.startswith("view.")
+            or domain.startswith("news.")
+            or domain.startswith("marketing.")
+        ):
+            marketing_score += 2
+
+        # Generic email service platforms
+        if any(
+            service in domain
+            for service in [
+                "sendgrid",
+                "mailgun",
+                "mailchimp",
+                "constantcontact",
+                "exacttarget",
+            ]
+        ):
+            marketing_score += 2
+
+    # Signal 4: List-Unsubscribe header (if present in body)
+    if "list-unsubscribe" in body_lower or "list-id" in body_lower:
+        marketing_score += 2
+
+    # If score >= 3, it's definitely marketing
+    if marketing_score >= 3:
+        return EmailDecision(
+            email=email,
+            decision=Decision.DELETE,
+            reason=FilterReason.SENDER_PATTERN,
+            confidence=min(0.95, 0.70 + (marketing_score * 0.05)),
+        )
+
+    return None
+
+
 class HTMLTextExtractor(HTMLParser):
     """Extract plain text from HTML, ignoring tags and scripts."""
 
@@ -200,14 +340,26 @@ def classify_with_ai(email: Email, config: Config) -> EmailDecision:
     # Strip HTML and truncate symmetrically to preserve footer (unsubscribe links, etc.)
     body_preview = truncate_symmetric(email.body)
 
-    prompt = f"""Classify this email as marketing/promotional or important.
+    prompt = f"""Classify this email. Answer YES to DELETE, NO to KEEP.
 
+KEEP (answer NO) if:
+- Receipt: "Thank you for your payment (Receipt# 123)", "Invoice #456"
+- Shipping: "Your package is arriving", "Order shipped", "Tracking number"
+- Financial: "We mailed your card", "Statement available", "Account alert"
+- Personal: Email from a person (not a company)
+
+DELETE (answer YES) if:
+- Marketing: Sales, discounts, coupons, "Save 20%", "Limited time"
+- Newsletters: Updates, blog posts, curated content
+- Notifications: GitHub, Slack, automated alerts
+- Surveys: "Tell us what you think"
+
+Email:
 Subject: {email.subject}
 From: {email.sender}
-Body preview: {body_preview}
+Body: {body_preview}
 
-Is this a marketing/promotional email that can be safely deleted?
-Answer only YES or NO.
+Can this be safely deleted? YES or NO only.
 
 Answer:"""
 
@@ -340,6 +492,169 @@ def sender_pattern_filter_agent(state: ProcessingState) -> ProcessingState:
         )
         decision = check_sender_pattern(email, sender_stats, state.config)
         if decision:
+            new_state = new_state.add_decision(decision)
+
+    return new_state
+
+
+def transactional_filter_agent(state: ProcessingState) -> ProcessingState:
+    """Detect transactional emails (receipts, shipping, financial).
+
+    Pure function that identifies emails with financial/legal value that
+    should be kept: receipts, order confirmations, shipping notifications.
+    """
+    new_state = state
+    decided_uids = {d.email.uid for d in state.decisions}
+
+    for email in state.emails:
+        if email.uid in state.processed_uids or email.uid in decided_uids:
+            continue
+
+        text = f"{email.subject} {email.body}".lower()
+        subject_lower = email.subject.lower()
+        sender_lower = email.sender.lower()
+
+        import re
+
+        # Pattern 1: Receipt/Invoice/Order numbers in subject
+        if re.search(r"(receipt|invoice|order|confirmation)\s*#?\s*\d+", subject_lower):
+            decision = EmailDecision(
+                email=email,
+                decision=Decision.KEEP,
+                reason=FilterReason.KEYWORD,
+                confidence=0.98,
+            )
+            new_state = new_state.add_decision(decision)
+            continue
+
+        # Pattern 2: Transactional Amazon senders
+        amazon_transactional = [
+            "ship-confirm@amazon.com",
+            "auto-confirm@amazon.com",
+            "digital-noreply@amazon.com",
+            "order-update@amazon.com",
+        ]
+        if any(sender in sender_lower for sender in amazon_transactional):
+            decision = EmailDecision(
+                email=email,
+                decision=Decision.KEEP,
+                reason=FilterReason.WHITELIST,
+                confidence=0.95,
+            )
+            new_state = new_state.add_decision(decision)
+            continue
+
+        # Pattern 3: Payment keywords
+        payment_keywords = [
+            "thank you for your payment",
+            "payment received",
+            "payment confirmation",
+            "your package is arriving",
+            "has shipped",
+            "order confirmed",
+            "out for delivery",
+            "delivered to",
+        ]
+        for keyword in payment_keywords:
+            if keyword in text:
+                decision = EmailDecision(
+                    email=email,
+                    decision=Decision.KEEP,
+                    reason=FilterReason.KEYWORD,
+                    confidence=0.90,
+                )
+                new_state = new_state.add_decision(decision)
+                break
+
+        # Pattern 4: Personal emails (gmail, outlook from individuals)
+        personal_domains = ["@gmail.com", "@outlook.com", "@hotmail.com", "@yahoo.com"]
+        if any(domain in sender_lower for domain in personal_domains):
+            # Check if it's not automated (no "noreply", "no-reply")
+            if "noreply" not in sender_lower and "no-reply" not in sender_lower:
+                decision = EmailDecision(
+                    email=email,
+                    decision=Decision.KEEP,
+                    reason=FilterReason.WHITELIST,
+                    confidence=0.85,
+                )
+                new_state = new_state.add_decision(decision)
+                continue
+
+    return new_state
+
+
+def marketing_indicators_filter_agent(state: ProcessingState) -> ProcessingState:
+    """Detect marketing emails using metadata indicators.
+
+    Pure function that identifies marketing emails by telltale signs:
+    unsubscribe links, "view in browser", and tracking subdomains.
+    """
+    new_state = state
+    decided_uids = {d.email.uid for d in state.decisions}
+
+    for email in state.emails:
+        if email.uid in state.processed_uids or email.uid in decided_uids:
+            continue
+
+        body_lower = email.body.lower()
+        sender_lower = email.sender.lower()
+
+        # Strong marketing signals
+        marketing_score = 0
+
+        # Signal 1: Unsubscribe link (very strong)
+        if "unsubscribe" in body_lower:
+            marketing_score += 3
+
+        # Signal 2: "View in browser" link
+        if ("view" in body_lower and "browser" in body_lower) or (
+            "click here" in body_lower and "web browser" in body_lower
+        ):
+            marketing_score += 2
+
+        # Signal 3: Marketing platform subdomain
+        import re
+
+        sender_match = re.search(r"@([^\s>]+)", sender_lower)
+        if sender_match:
+            domain = sender_match.group(1)
+
+            # e.domain.com or email.domain.com patterns
+            if (
+                domain.startswith("e.")
+                or domain.startswith("email.")
+                or domain.startswith("click.")
+                or domain.startswith("view.")
+                or domain.startswith("news.")
+                or domain.startswith("marketing.")
+            ):
+                marketing_score += 2
+
+            # Generic email service platforms
+            if any(
+                service in domain
+                for service in [
+                    "sendgrid",
+                    "mailgun",
+                    "mailchimp",
+                    "constantcontact",
+                    "exacttarget",
+                ]
+            ):
+                marketing_score += 2
+
+        # Signal 4: List-Unsubscribe header (if present in body)
+        if "list-unsubscribe" in body_lower or "list-id" in body_lower:
+            marketing_score += 2
+
+        # If score >= 3, it's definitely marketing
+        if marketing_score >= 3:
+            decision = EmailDecision(
+                email=email,
+                decision=Decision.DELETE,
+                reason=FilterReason.SENDER_PATTERN,
+                confidence=min(0.95, 0.70 + (marketing_score * 0.05)),
+            )
             new_state = new_state.add_decision(decision)
 
     return new_state
