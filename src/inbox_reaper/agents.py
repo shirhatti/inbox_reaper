@@ -213,7 +213,8 @@ Answer only YES or NO.
 Answer:"""
 
     try:
-        response = ollama.chat(
+        client = ollama.Client(host=config.ollama_base_url)
+        response = client.chat(
             model=config.model_name,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -232,8 +233,11 @@ Answer:"""
             confidence=0.8,
         )
 
-    except Exception:
+    except Exception as e:
         # On error, default to KEEP (safe default)
+        import logging
+
+        logging.getLogger(__name__).error(f"Ollama classification failed: {e}")
         return EmailDecision(
             email=email,
             decision=Decision.KEEP,

@@ -76,7 +76,7 @@ class Config(BaseModel):
 
     # AI settings
     concurrent_ai_limit: int = 25
-    model_name: str = "gemma2:2b"
+    model_name: str = "gemma3:4b"
     ollama_base_url: str = "http://localhost:11434"
 
     # Email settings

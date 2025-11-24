@@ -42,7 +42,7 @@ def cli():
 @cli.command()
 @click.option(
     "--model",
-    default="gemma2:2b",
+    default="gemma3:4b",
     help="Ollama model name for AI classification",
     show_default=True,
 )

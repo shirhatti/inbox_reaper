@@ -263,11 +263,13 @@ class AsyncIMAPClient:
             return None
 
         # Parse email message
-        # Response format: [b'UID FETCH (... BODY[] {size}', b'raw email data', b')']
+        # Response format: [b'UID FETCH (... BODY[] {size}', bytearray(...), b')']
+        # The actual email data is in a bytearray
         raw_email = None
         for line in response.lines:
-            if isinstance(line, bytes) and b"From:" in line:
-                raw_email = line
+            # The email body is typically a large bytearray
+            if isinstance(line, bytes | bytearray) and len(line) > 100:
+                raw_email = bytes(line)
                 break
 
         if not raw_email:
@@ -470,17 +472,22 @@ class AsyncIMAPClient:
                     )
 
                     if response.result != "OK":
-                        logger.warning(f"Failed to fetch headers for UID {uid}")
+                        logger.warning(
+                            f"Failed to fetch headers for UID {uid}: {response.result}"
+                        )
                         continue
 
                     # Parse header from response
+                    # The header data is in a bytearray, typically the second line
                     raw_header = None
                     for line in response.lines:
-                        if isinstance(line, bytes) and b"From:" in line:
-                            raw_header = line
+                        # The actual header is a bytearray containing the full header
+                        if isinstance(line, bytes | bytearray) and len(line) > 100:
+                            raw_header = bytes(line)
                             break
 
                     if not raw_header:
+                        logger.warning(f"No raw_header found for UID {uid}")
                         continue
 
                     # Parse with email library
