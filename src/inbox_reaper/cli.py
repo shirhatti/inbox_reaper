@@ -4,15 +4,16 @@ Provides a Click-based command-line interface for the email classification syste
 """
 
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import click
-from google import genai
 
 from . import credential_helper
-from .dag import run_pipeline, run_pipeline_with_adk
+from .checkpoint_manager import CheckpointManager
+from .langgraph_dag import run_langgraph_pipeline
 from .oauth_config import detect_provider
 from .oauth_flow import perform_oauth_flow, refresh_access_token, verify_imap_connection
-from .state import Config, Email, ProcessingState
+from .state import Config, Email
 
 
 @click.group()
@@ -61,9 +62,16 @@ def cli():
     show_default=True,
 )
 @click.option(
-    "--use-adk/--no-adk",
-    default=False,
-    help="Use Google ADK for agent orchestration (experimental)",
+    "--checkpoint-path",
+    default="checkpoints.db",
+    type=click.Path(),
+    help="Path to SQLite checkpoint database for resumable processing",
+    show_default=True,
+)
+@click.option(
+    "--resume/--no-resume",
+    default=True,
+    help="Resume from checkpoint if available (default: ask user)",
     show_default=True,
 )
 @click.option(
@@ -82,19 +90,22 @@ def process(
     batch_size: int,
     concurrent_limit: int,
     dry_run: bool,
-    use_adk: bool,
+    checkpoint_path: str,
+    resume: bool,
     keywords: tuple,
     whitelist_domain: tuple,
 ):
-    """Process emails through the classification pipeline.
+    """Process emails through the classification pipeline with LangGraph.
 
-    This command runs the email classification agent on a batch of emails.
-    Currently uses mock data for demonstration purposes.
+    This command runs the email classification pipeline using LangGraph for
+    orchestration, with support for checkpointing and resumable processing.
 
     Example:
         inbox-reaper process --keywords "important" --whitelist-domain "gmail.com"
+        inbox-reaper process --checkpoint-path my_checkpoint.db --resume
+        inbox-reaper process --dry-run --no-resume
     """
-    click.echo("🚀 Inbox Reaper - Email Classification System")
+    click.echo("Inbox Reaper - Email Classification System (LangGraph)")
     click.echo("=" * 60)
 
     # Create configuration
@@ -108,113 +119,88 @@ def process(
         whitelist_domains=list(whitelist_domain),
     )
 
-    click.echo("\n📋 Configuration:")
+    click.echo("\nConfiguration:")
     click.echo(f"  Model: {config.model_name}")
     click.echo(f"  Ollama URL: {config.ollama_base_url}")
     click.echo(f"  Batch size: {config.batch_size}")
     click.echo(f"  Concurrent limit: {config.concurrent_ai_limit}")
     click.echo(f"  Dry run: {config.dry_run}")
+    click.echo(f"  Checkpoint: {checkpoint_path}")
     click.echo(f"  Keywords: {config.keywords or 'None'}")
     click.echo(f"  Whitelisted domains: {config.whitelist_domains or 'None'}")
 
-    # Create mock emails for demonstration
-    mock_emails = create_mock_emails()
+    # Initialize checkpoint manager
+    try:
+        checkpoint_manager = CheckpointManager(checkpoint_path)
+        click.echo(f"\nCheckpoint database initialized: {checkpoint_path}")
+    except Exception as e:
+        click.echo(f"\nError initializing checkpoint: {e}", err=True)
+        click.echo("Tip: Use --checkpoint-path to specify a different location")
+        if click.confirm("Continue without checkpointing?", default=False):
+            click.echo("Warning: Processing without checkpoints - cannot resume if interrupted")
+            checkpoint_manager = None
+        else:
+            click.echo("Aborted.")
+            return
 
-    click.echo(f"\n📧 Processing {len(mock_emails)} mock emails...")
+    # Check for resumable session
+    should_resume = False
+    if checkpoint_manager and resume:
+        # Verify checkpoint integrity
+        is_valid, integrity_msg = checkpoint_manager.verify_checkpoint_integrity()
 
-    # Create initial state
-    initial_state = ProcessingState(config=config, emails=mock_emails)
+        if not is_valid:
+            click.echo(f"\nCheckpoint integrity check failed: {integrity_msg}")
+            if click.confirm("Clear corrupted checkpoint and start fresh?", default=True):
+                checkpoint_manager.clear_checkpoint()
+                click.echo("Checkpoint cleared. Starting fresh.")
+            else:
+                click.echo("Aborted.")
+                return
+        else:
+            # Check if there's a resumable session
+            resume_info = checkpoint_manager.get_resume_info()
+            if resume_info["can_resume"]:
+                should_resume = checkpoint_manager.display_resume_prompt()
+                if not should_resume:
+                    # User chose not to resume, clear checkpoint
+                    checkpoint_manager.clear_checkpoint()
+                    click.echo("Starting fresh processing session.")
 
-    # Run the pipeline
-    if use_adk:
-        click.echo("\n🤖 Using Google ADK for agent orchestration...")
-        # Initialize Google GenAI client
-        # Note: Requires GOOGLE_API_KEY environment variable
-        try:
-            client = genai.Client()
-            final_state = run_pipeline_with_adk(initial_state, client)
-        except Exception as e:
-            click.echo(f"\n⚠️  ADK initialization failed: {e}", err=True)
-            click.echo("   Falling back to simple pipeline...\n")
-            final_state = run_pipeline(initial_state)
-    else:
-        click.echo("\n⚙️  Using simple sequential pipeline...")
-        final_state = run_pipeline(initial_state)
+    # Run the LangGraph pipeline
+    try:
+        click.echo("\nStarting LangGraph pipeline execution...")
+        click.echo("-" * 60)
 
-    # Display final results
-    click.echo("\n" + "=" * 60)
-    click.echo("✅ Processing Complete!")
-    click.echo("=" * 60)
+        final_state = run_langgraph_pipeline(config, checkpoint_path)
 
-    click.echo("\n📊 Final Statistics:")
-    click.echo(f"  Total processed: {final_state.total_processed}")
-    click.echo(f"  Total kept: {final_state.total_kept}")
-    click.echo(f"  Total deleted: {final_state.total_deleted}")
+        click.echo("\n" + "=" * 60)
+        click.echo("Processing Complete!")
+        click.echo("=" * 60)
 
-    if final_state.errors:
-        click.echo(f"\n⚠️  Errors encountered: {len(final_state.errors)}")
-        for error in final_state.errors:
-            click.echo(f"    - {error}")
+        # Display final summary using CheckpointManager
+        if checkpoint_manager:
+            checkpoint_manager.display_summary(final_state)
+            # Clear checkpoint on successful completion
+            checkpoint_manager.clear_checkpoint()
+        else:
+            # Fallback display if no checkpoint manager
+            click.echo(f"\nTotal processed: {final_state['total_processed']}")
+            click.echo(f"Total deleted:   {final_state['total_deleted']}")
+            click.echo(f"Total kept:      {final_state['total_kept']}")
+            if final_state['errors']:
+                click.echo(f"Errors:          {len(final_state['errors'])}")
 
-    # Display decisions
-    if final_state.decisions:
-        click.echo("\n📝 Decisions:")
-        for i, decision in enumerate(final_state.decisions, 1):
-            emoji = "🗑️ " if decision.decision.value == "delete" else "📬"
-            click.echo(
-                f"  {i}. {emoji} [{decision.decision.value.upper()}] "
-                f"{decision.email.subject[:50]}... "
-                f"(reason: {decision.reason.value})"
-            )
-
-
-def create_mock_emails() -> list[Email]:
-    """Create mock emails for demonstration purposes.
-
-    In production, this would be replaced with actual IMAP fetching.
-    """
-    return [
-        Email(
-            uid="1001",
-            subject="SALE: 50% off everything!",
-            sender="marketing@store.com",
-            body="Limited time offer! Get 50% off all items in our store...",
-            date=datetime.now(),
-            attachments=[],
-        ),
-        Email(
-            uid="1002",
-            subject="Your bank statement for November",
-            sender="notifications@wellsfargo.com",
-            body="Your monthly statement is now available...",
-            date=datetime.now(),
-            attachments=["statement.pdf"],
-        ),
-        Email(
-            uid="1003",
-            subject="Meeting notes from Mario Romo",
-            sender="mario@company.com",
-            body="Hi team, here are the notes from our meeting...",
-            date=datetime.now(),
-            attachments=[],
-        ),
-        Email(
-            uid="1004",
-            subject="Weekly newsletter",
-            sender="news@techblog.com",
-            body="Here's what happened in tech this week...",
-            date=datetime.now(),
-            attachments=[],
-        ),
-        Email(
-            uid="1005",
-            subject="Important: Password reset required",
-            sender="security@gmail.com",
-            body="We detected unusual activity on your account...",
-            date=datetime.now(),
-            attachments=[],
-        ),
-    ]
+    except KeyboardInterrupt:
+        click.echo("\n\nProcessing interrupted by user.")
+        if checkpoint_manager:
+            click.echo("Progress has been saved. Use --resume to continue from checkpoint.")
+        raise
+    except Exception as e:
+        click.echo(f"\nError during processing: {e}", err=True)
+        if checkpoint_manager:
+            click.echo("Progress has been saved. Use --resume to continue from checkpoint.")
+        raise
 
 
 @cli.command()

@@ -1,34 +1,50 @@
 # Inbox Reaper
 
-Email classification and cleaning system using a hybrid deterministic + AI pipeline.
+Email classification and cleaning system using a hybrid deterministic + AI pipeline with LangGraph orchestration.
 
 ## Architecture
 
-### State-Based Design
+### LangGraph-Based Parallel Processing
 
-All application state is encapsulated in immutable Pydantic models (`state.py`):
-- `ProcessingState` - Single source of truth flowing through the pipeline
-- `Email` - Immutable email data
-- `EmailDecision` - Classification decision with metadata
-- `Config` - Pipeline configuration
+The system uses **LangGraph** for stateful, parallel email processing:
+- **Parallel Processing**: Process multiple emails simultaneously using Send() API
+- **State Synchronization**: Thread-safe reducers for concurrent state updates
+- **Checkpointing**: Automatic progress persistence with resume capability
+- **Graph-Based Workflow**: Declarative DAG for complex orchestration
 
-### Pure Functional Agents
+### Key Components
 
-Each agent is a pure function: `ProcessingState -> ProcessingState` (`agents.py`):
-1. **attachment_filter_agent** - Check for important attachments
-2. **keyword_filter_agent** - Check for critical keywords
-3. **whitelist_filter_agent** - Check against whitelisted domains
-4. **sender_pattern_filter_agent** - Check sender history patterns
-5. **ai_classifier_agent** - AI classification using Ollama (only non-pure)
-6. **log_progress_agent** - Display progress
-7. **check_termination_agent** - Determine if processing should stop
+**State Management** (`langgraph_state.py`):
+- `GraphState` - TypedDict with Annotated reducers for thread-safe parallel updates
+- Custom reducers: `merge_sender_stats`, `merge_email_headers`
+- Built-in reducers: `operator.add` (lists), `operator.or_` (sets)
 
-### DAG Workflow
+**Main Graph** (`langgraph_dag.py`):
+1. **batch_fetch_headers** - Fetch email headers from IMAP in batch
+2. **fan_out_processing** - Spawn parallel subgraphs for each email
+3. **aggregate_results** - Collect decisions from parallel subgraphs
+4. **batch_fetch_bodies** - Fetch full bodies for AI classification (conditional)
+5. **fan_out_ai_classification** - Spawn parallel AI classification tasks
+6. **aggregate_ai_results** - Collect AI classification results
+7. **batch_delete** - Execute batch IMAP deletion
+8. **update_checkpoint** - Persist progress for resumability
 
-The agent pipeline is defined in `dag.py`:
-- Sequential execution for now
-- Easily extensible to parallel/conditional flows
-- Google ADK integration scaffolded (placeholder)
+**Subgraphs** (`langgraph_subgraphs.py`):
+- **email_processing_subgraph** - Deterministic filter pipeline per email
+  - check_attachments → check_keywords → check_whitelist → check_sender_pattern
+- **ai_classification_subgraph** - AI classification using Ollama
+
+**Checkpoint Management** (`checkpoint_manager.py`):
+- UID watermarking for resumable processing
+- Progress tracking with ETA calculations
+- SQLite-based persistence with LangGraph's SqliteSaver
+
+### Legacy Architecture (dag.py)
+
+The original sequential pipeline is still available:
+- Pure functional agents: `ProcessingState -> ProcessingState`
+- Sequential execution with optional Google ADK integration
+- Use `--no-langgraph` flag to run legacy pipeline (when implemented)
 
 ## Installation
 
@@ -36,6 +52,14 @@ The agent pipeline is defined in `dag.py`:
 # Install dependencies
 uv sync
 ```
+
+**Dependencies:**
+- `langgraph>=0.2.0` - Graph orchestration with checkpointing
+- `ollama>=0.1.0` - Local LLM inference
+- `pydantic>=2.0.0` - Type-safe state models
+- `authlib>=1.3.0` - OAuth 2.0 authentication
+- `keyring>=25.0.0` - Secure credential storage
+- `click>=8.1.0` - CLI framework
 
 ## Authentication
 
@@ -94,7 +118,7 @@ Inbox Reaper uses **Thunderbird's public OAuth client IDs** for Gmail and Outloo
 
 ## Usage
 
-### Basic Usage (Mock Emails)
+### Basic Usage
 
 ```bash
 # Run with defaults (dry-run mode, gemma2:2b model)
@@ -109,60 +133,167 @@ inbox-reaper process \
   --keywords "Mario Romo" \
   --whitelist-domain "gmail.com" \
   --whitelist-domain "wellsfargo.com"
+
+# Increase parallel processing for faster throughput
+inbox-reaper process --concurrent-limit 50 --batch-size 200
 ```
 
-### Options
+### Checkpoint and Resume
 
+The system automatically creates checkpoints after each batch. If interrupted (CTRL-C, crash, etc.), you can resume:
+
+```bash
+# Start processing
+inbox-reaper process
+
+# ... interrupted after 50,000 emails processed ...
+
+# Resume from last checkpoint
+inbox-reaper process
+# Prompts: "Do you want to resume from the last checkpoint? [Y/n]"
+
+# Clear checkpoint and start fresh
+inbox-reaper checkpoint clear
+
+# View checkpoint status
+inbox-reaper checkpoint status
+```
+
+**Checkpoint Features:**
+- Exactly-once processing (no duplicate deletions)
+- UID watermarking for IMAP pagination
+- Persistent sender statistics
+- Progress tracking with ETA
+
+### Performance Tuning
+
+**Concurrency Tuning:**
+```bash
+# For CPU-bound workloads (deterministic filters)
+# Rule: concurrent_limit = CPU cores × 2
+inbox-reaper process --concurrent-limit 16  # For 8-core CPU
+
+# For GPU-bound workloads (AI classification)
+# Rule: concurrent_limit = GPU VRAM / model VRAM
+inbox-reaper process --concurrent-limit 6   # For gemma2:2b on 16GB GPU
+inbox-reaper process --concurrent-limit 4   # For llama3.2:3b on 16GB GPU
+```
+
+**Batch Size Tuning:**
+```bash
+# Smaller batches: More frequent checkpoints, less memory
+inbox-reaper process --batch-size 50
+
+# Larger batches: Fewer IMAP roundtrips, more memory
+inbox-reaper process --batch-size 200
+```
+
+**Expected Throughput:**
+- Deterministic filters only: ~12-50 emails/s (depends on CPU cores)
+- With AI classification: ~8-25 emails/s (depends on GPU/model)
+- 150,000 emails: ~5-20 hours (vs. 100+ hours sequential)
+
+### CLI Options
+
+**Processing Options:**
 - `--model TEXT` - Ollama model name (default: gemma2:2b)
 - `--ollama-url TEXT` - Ollama base URL (default: http://localhost:11434)
 - `--batch-size INT` - Emails per batch (default: 50)
-- `--concurrent-limit INT` - Max concurrent AI requests (default: 25)
+- `--fetch-size INT` - IMAP fetch size per request (default: 100)
+- `--concurrent-limit INT` - Max concurrent parallel tasks (default: 25)
 - `--dry-run/--no-dry-run` - Enable dry-run mode (default: True)
-- `--use-adk/--no-adk` - Use Google ADK (experimental, default: False)
-- `--keywords TEXT` - Critical keywords (repeatable)
-- `--whitelist-domain TEXT` - Whitelisted domains (repeatable)
+- `--checkpoint-path TEXT` - Checkpoint database path (default: checkpoints.db)
 
-## State Flow Example
+**Filter Configuration:**
+- `--keywords TEXT` - Critical keywords to trigger KEEP (repeatable)
+- `--whitelist-domain TEXT` - Whitelisted domains to trigger KEEP (repeatable)
+- `--auto-delete-threshold INT` - Marketing emails before auto-delete (default: 5)
+- `--enable-sender-tracking/--no-sender-tracking` - Track sender patterns (default: True)
+
+**Legacy Options:**
+- `--use-adk/--no-adk` - Use Google ADK (experimental, default: False)
+- `--no-langgraph` - Use legacy sequential pipeline (default: False)
+
+## LangGraph Workflow Example
 
 ```python
-# Initial state
-state = ProcessingState(
-    config=config,
-    emails=[email1, email2, ...],
-    decisions=[],
-    processed_uids=set(),
+from inbox_reaper.langgraph_dag import build_langgraph
+from inbox_reaper.langgraph_state import create_initial_state
+from inbox_reaper.state import Config
+
+# Create configuration
+config = Config(
+    model_name="gemma2:2b",
+    batch_size=50,
+    concurrent_ai_limit=25,
+    dry_run=True,
 )
 
-# Flow through pipeline
-state = attachment_filter_agent(state)  # May add some decisions
-state = keyword_filter_agent(state)     # May add more decisions
-state = whitelist_filter_agent(state)   # May add more decisions
-state = sender_pattern_filter_agent(state)  # May add more decisions
-state = ai_classifier_agent(state)      # Classify remaining emails
-state = log_progress_agent(state)       # Display progress
-state = check_termination_agent(state)  # Check if should stop
+# Build LangGraph with checkpoint support
+graph = build_langgraph(config, checkpoint_path="checkpoints.db")
 
-# Final state has all decisions
-print(f"Processed: {state.total_processed}")
-print(f"Kept: {state.total_kept}")
-print(f"Deleted: {state.total_deleted}")
+# Create initial state
+initial_state = create_initial_state(config)
+
+# Run graph with automatic checkpointing
+final_state = graph.invoke(
+    initial_state,
+    config={"configurable": {"thread_id": "email_classification_session"}}
+)
+
+# Results
+print(f"Processed: {final_state['total_processed']}")
+print(f"Kept: {final_state['total_kept']}")
+print(f"Deleted: {final_state['total_deleted']}")
 ```
+
+**Parallel Execution Flow:**
+1. Fetch email headers (batch of 100)
+2. Spawn 100 parallel subgraphs (deterministic filters)
+3. Aggregate results → 60 decided, 40 need AI
+4. Fetch full bodies for 40 emails
+5. Spawn 40 parallel AI classification tasks
+6. Aggregate all 100 decisions
+7. Batch delete 75 marketing emails
+8. Update checkpoint → Resume from here if interrupted
 
 ## Design Principles
 
-1. **Immutability** - All state objects are frozen Pydantic models
-2. **Pure Functions** - Agents are pure transformations (except AI calls)
-3. **Single Source of Truth** - ProcessingState contains everything
+1. **Parallel-First Architecture** - LangGraph Send() API for dynamic parallelism
+2. **Thread-Safe State Management** - Annotated reducers for concurrent updates
+3. **Resumable by Default** - Automatic checkpointing with UID watermarking
 4. **Layered Decision Pipeline** - Cheap filters first, expensive AI last
 5. **Type Safety** - Full type hints with Pydantic validation
+6. **Immutability** - State objects are frozen TypedDicts
+7. **Pure Functions** - Reducers and agents are pure transformations
+
+## Architecture Documentation
+
+For detailed architecture documentation, see:
+- **[DESIGN.md](DESIGN.md)** - High-level design patterns and learnings
+  - LangGraph architecture with parallel processing
+  - Reducer patterns and thread-safety guarantees
+  - Checkpoint format and resume process
+  - Performance benchmarks and tuning guide
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Detailed graph structure
+  - Node responsibilities and data flow
+  - State schema with reducer annotations
+  - Subgraph design patterns
+  - Integration points (IMAP, Ollama, SQLite)
+- **[docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)** - Parallel processing deep dive
+  - Send() API usage patterns
+  - Synchronization primitives
+  - Batch optimization techniques
+  - Performance benchmarks and scaling analysis
 
 ## Next Steps
 
 - [x] Add OAuth 2.0 authentication with secure credential storage
+- [x] Add LangGraph-based parallel processing architecture
+- [x] Add SQLite persistence for progress tracking with checkpointing
+- [x] Implement batch database operations with reducers
+- [x] Add concurrent AI classification with LangGraph Send() API
 - [ ] Add IMAP email fetching using OAuth credentials
-- [ ] Add SQLite persistence for progress tracking
-- [ ] Implement batch database operations
-- [ ] Add concurrent AI classification (asyncio + semaphore)
 - [ ] Add pipelined I/O (fetch while processing)
 - [ ] Implement full Google ADK integration
 - [ ] Add email deletion functionality
