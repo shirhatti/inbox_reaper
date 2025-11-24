@@ -3,6 +3,7 @@
 Provides a Click-based command-line interface for the email classification system.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -307,8 +308,8 @@ def test(email: str):
 
     # Test connection
     click.echo(f"\nTesting IMAP connection for {email}...")
-    success, message = verify_imap_connection(
-        email, creds["access_token"], creds["provider"]
+    success, message = asyncio.run(
+        verify_imap_connection(email, creds["access_token"], creds["provider"])
     )
 
     if success:
