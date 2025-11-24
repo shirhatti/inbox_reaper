@@ -34,8 +34,63 @@ The agent pipeline is defined in `dag.py`:
 
 ```bash
 # Install dependencies
-uv pip install -e .
+uv sync
 ```
+
+## Authentication
+
+Inbox Reaper uses OAuth 2.0 for secure email access. Credentials are stored securely using the [keyring](https://pypi.org/project/keyring/) library, which automatically uses your system's native credential storage:
+- **macOS**: Keychain
+- **Windows**: Windows Credential Locker
+- **Linux**: Secret Service (GNOME Keyring / KWallet)
+
+### Login to Email Account
+
+```bash
+# Gmail (auto-detected)
+inbox-reaper login user@gmail.com
+
+# Outlook/Hotmail (auto-detected)
+inbox-reaper login user@outlook.com
+
+# Specify provider explicitly
+inbox-reaper login user@company.com --provider gmail
+```
+
+This will:
+1. Open your browser for OAuth authentication
+2. Securely store your credentials
+3. Automatically refresh tokens when needed
+
+### Manage Accounts
+
+```bash
+# List all stored accounts
+inbox-reaper accounts
+
+# List with detailed information
+inbox-reaper accounts --verbose
+
+# Test IMAP connection
+inbox-reaper test user@gmail.com
+
+# Remove stored credentials
+inbox-reaper logout user@gmail.com
+```
+
+### OAuth Details
+
+Inbox Reaper uses **Thunderbird's public OAuth client IDs** for Gmail and Outlook with **PKCE** (Proof Key for Code Exchange) for enhanced security:
+- ✅ No need to create your own OAuth app
+- ✅ Works out of the box
+- ✅ PKCE protection against authorization code interception
+- ✅ Secure and privacy-focused
+- ⚠️ Credentials are stored locally on your machine only
+
+**Technical Implementation:**
+- Uses [Authlib](https://docs.authlib.org/) for OAuth 2.0 with PKCE
+- SHA256 code challenge method for maximum security
+- Automatic token refresh when expired
 
 ## Usage
 
@@ -103,7 +158,8 @@ print(f"Deleted: {state.total_deleted}")
 
 ## Next Steps
 
-- [ ] Add IMAP email fetching
+- [x] Add OAuth 2.0 authentication with secure credential storage
+- [ ] Add IMAP email fetching using OAuth credentials
 - [ ] Add SQLite persistence for progress tracking
 - [ ] Implement batch database operations
 - [ ] Add concurrent AI classification (asyncio + semaphore)
@@ -117,7 +173,7 @@ print(f"Deleted: {state.total_deleted}")
 
 ```bash
 # Install dependencies and set up pre-commit hooks automatically
-uv pip install -e ".[dev]"
+uv sync --extra dev
 uv run setup-dev
 ```
 
@@ -130,7 +186,7 @@ This will:
 
 ```bash
 # Install development dependencies
-uv pip install -e ".[dev]"
+uv sync --extra dev
 
 # Install pre-commit hooks manually
 uv run pre-commit install

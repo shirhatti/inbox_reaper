@@ -25,22 +25,19 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: |
-          uv pip install --system -e .
-          uv pip install --system ruff black mypy pytest
+        run: uv sync --extra dev
 
       - name: Lint with ruff
-        run: ruff check src/
+        run: uv run ruff check src/
 
       - name: Check formatting with ruff
-        run: ruff format --check src/
+        run: uv run ruff format --check src/
 
       - name: Check formatting with black
-        run: black --check src/
+        run: uv run black --check src/
 
       - name: Type check with mypy
-        run: mypy src/
-        continue-on-error: true
+        run: uv run mypy src/
 
   test:
     name: Test
@@ -59,10 +56,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: |
-          uv pip install --system -e .
-          uv pip install --system pytest
+        run: uv sync --extra dev
 
       - name: Run tests
-        run: pytest
-        continue-on-error: true
+        run: uv run pytest

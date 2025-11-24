@@ -3,12 +3,15 @@
 Provides a Click-based command-line interface for the email classification system.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import click
 from google import genai
 
+from . import credential_helper
 from .dag import run_pipeline, run_pipeline_with_adk
+from .oauth_config import detect_provider
+from .oauth_flow import perform_oauth_flow, refresh_access_token, test_imap_connection
 from .state import Config, Email, ProcessingState
 
 
@@ -219,6 +222,141 @@ def version():
     """Display version information."""
     click.echo("Inbox Reaper v0.1.0")
     click.echo("Email classification and cleaning system")
+
+
+@cli.command()
+@click.argument("email")
+@click.option(
+    "--provider",
+    type=click.Choice(["gmail", "outlook"]),
+    help="Email provider (auto-detected if not specified)",
+)
+def login(email: str, provider: str | None):
+    """Authenticate and store OAuth credentials for an email account.
+
+    This command opens a browser window for OAuth authentication and securely
+    stores the credentials using the system's native credential storage.
+
+    Example:
+        inbox-reaper login user@gmail.com
+        inbox-reaper login user@company.com --provider outlook
+    """
+    click.echo(f"Authenticating {email}...")
+
+    # Auto-detect provider if not specified
+    if not provider:
+        try:
+            provider = detect_provider(email)
+            click.echo(f"Auto-detected provider: {provider}")
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            return
+
+    # Perform OAuth flow
+    try:
+        tokens = perform_oauth_flow(email, provider)
+
+        # Store credentials
+        credentials = {
+            "email": email,
+            "provider": provider,
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens.get("refresh_token"),
+            "expires_at": (
+                datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
+            ).isoformat(),
+            "token_type": tokens.get("token_type", "Bearer"),
+        }
+
+        credential_helper.store_credentials(email, credentials)
+        click.echo(f"\n✓ Credentials saved for {email}")
+
+    except Exception as e:
+        click.echo(f"\nError during authentication: {e}", err=True)
+        return
+
+
+@cli.command()
+@click.argument("email")
+def logout(email: str):
+    """Remove stored OAuth credentials for an email account.
+
+    Example:
+        inbox-reaper logout user@gmail.com
+    """
+    credential_helper.erase_credentials(email)
+    click.echo(f"✓ Credentials removed for {email}")
+
+
+@cli.command()
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Show detailed information including expiration status",
+)
+def accounts(verbose: bool):
+    """List all stored email accounts.
+
+    Example:
+        inbox-reaper accounts
+        inbox-reaper accounts --verbose
+
+    Note:
+        Due to limitations in the keyring library, this command cannot
+        automatically list all stored accounts. Use 'inbox-reaper test <email>'
+        to verify if credentials exist for a specific account.
+    """
+    click.echo("Account listing is not supported by the keyring library.")
+    click.echo("\nTo check if credentials exist for a specific account:")
+    click.echo("  inbox-reaper test <email>")
+    click.echo("\nTo add a new account:")
+    click.echo("  inbox-reaper login <email>")
+
+
+@cli.command()
+@click.argument("email")
+def test(email: str):
+    """Test IMAP connection with stored OAuth credentials.
+
+    This command verifies that the stored credentials work by attempting
+    to connect to the IMAP server and list messages in the INBOX.
+
+    Example:
+        inbox-reaper test user@gmail.com
+    """
+    # Get credentials
+    creds = credential_helper.get_credentials(email)
+    if not creds:
+        click.echo(f"No credentials found for {email}", err=True)
+        click.echo(f"\nUse 'inbox-reaper login {email}' to authenticate first.")
+        return
+
+    # Check if token expired and refresh if needed
+    try:
+        expires = datetime.fromisoformat(creds.get("expires_at", ""))
+        if expires < datetime.now():
+            click.echo("Token expired, refreshing...")
+            tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
+            creds["access_token"] = tokens["access_token"]
+            creds["expires_at"] = (
+                datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
+            ).isoformat()
+            credential_helper.store_credentials(email, creds)
+            click.echo("✓ Token refreshed successfully")
+    except Exception as e:
+        click.echo(f"Warning: Could not refresh token: {e}", err=True)
+
+    # Test connection
+    click.echo(f"\nTesting IMAP connection for {email}...")
+    success, message = test_imap_connection(
+        email, creds["access_token"], creds["provider"]
+    )
+
+    if success:
+        click.echo(f"✓ {message}")
+    else:
+        click.echo(f"✗ {message}", err=True)
 
 
 def main():

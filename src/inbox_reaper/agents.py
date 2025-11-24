@@ -274,7 +274,7 @@ def log_progress_agent(state: ProcessingState) -> ProcessingState:
 
     if state.decisions:
         print("\n=== Decision Breakdown ===")
-        reason_counts = {}
+        reason_counts: dict[str, int] = {}
         for d in state.decisions:
             reason_counts[d.reason.value] = reason_counts.get(d.reason.value, 0) + 1
         for reason, count in sorted(reason_counts.items()):
