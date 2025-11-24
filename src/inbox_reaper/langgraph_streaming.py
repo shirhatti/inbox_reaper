@@ -70,7 +70,9 @@ async def create_imap_client(email: str) -> AsyncIMAPClient:
                 store_credentials(email, creds)
                 logger.info("Token refreshed and persisted successfully")
             else:
-                logger.warning("No refresh token available, using existing access token")
+                logger.warning(
+                    "No refresh token available, using existing access token"
+                )
     except Exception as e:
         logger.warning(f"Could not refresh token: {e}, using existing token")
 

@@ -589,7 +589,7 @@ class TestTokenRefreshOnExpiry:
         mock_client_class.return_value = mock_client
 
         # Execute
-        result = asyncio.run(create_imap_client("test@outlook.com"))
+        asyncio.run(create_imap_client("test@outlook.com"))
 
         # Verify: refresh_access_token was NOT called
         mock_refresh.assert_not_called()
@@ -652,7 +652,8 @@ class TestTokenRefreshOnExpiry:
     def test_create_imap_client_handles_invalid_expires_at_types(
         self, mock_refresh, mock_get_creds, mock_client_class
     ):
-        """Test create_imap_client handles non-string expires_at values."""
+        """Test that create_imap_client handles non-string expires_at values
+        gracefully."""
         from inbox_reaper.langgraph_streaming import create_imap_client
 
         # Test with None expires_at
@@ -667,7 +668,7 @@ class TestTokenRefreshOnExpiry:
         mock_client_class.return_value = mock_client
 
         # Execute - should not raise, should use existing token
-        result = asyncio.run(create_imap_client("test@gmail.com"))
+        asyncio.run(create_imap_client("test@gmail.com"))
 
         # Verify: refresh was NOT attempted (can't parse None)
         mock_refresh.assert_not_called()
@@ -697,7 +698,7 @@ class TestTokenRefreshOnExpiry:
         mock_client_class.return_value = mock_client2
 
         # Execute - should not raise
-        result2 = asyncio.run(create_imap_client("test@outlook.com"))
+        asyncio.run(create_imap_client("test@outlook.com"))
 
         # Verify: refresh was NOT attempted
         mock_refresh.assert_not_called()

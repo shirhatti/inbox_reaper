@@ -133,7 +133,7 @@ class AsyncIMAPClient:
         except IMAPAuthError:
             # Re-raise auth errors for token refresh handling
             raise
-        except asyncio.TimeoutError as e:
+        except TimeoutError as e:
             raise IMAPConnectionError(
                 f"Connection timeout after {self.timeout}s connecting to {self.host}"
             ) from e
