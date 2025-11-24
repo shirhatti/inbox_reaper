@@ -1,7 +1,5 @@
 """Tests for OAuth authentication flow."""
 
-import base64
-import time
 from unittest.mock import Mock, call, patch
 
 from inbox_reaper.oauth_flow import (
@@ -193,7 +191,7 @@ class TestPerformOAuthFlow:
         # Test that expiration raises error
         try:
             perform_oauth_flow("test@example.com", "outlook")
-            assert False, "Should have raised RuntimeError"
+            raise AssertionError("Should have raised RuntimeError")
         except RuntimeError as e:
             assert "expired" in str(e).lower()
 
@@ -229,7 +227,7 @@ class TestPerformOAuthFlow:
         # Test that decline raises error
         try:
             perform_oauth_flow("test@example.com", "outlook")
-            assert False, "Should have raised RuntimeError"
+            raise AssertionError("Should have raised RuntimeError")
         except RuntimeError as e:
             assert "declined" in str(e).lower()
 
@@ -433,8 +431,10 @@ class TestRefreshAccessToken:
 
     @patch("inbox_reaper.oauth_flow.OAuth2Session")
     @patch("inbox_reaper.oauth_flow.get_oauth_config")
-    def test_successful_token_refresh_with_secret(self, mock_get_config, mock_session_class):
-        """Test successful token refresh with client secret (Gmail using redirect flow)."""
+    def test_successful_token_refresh_with_secret(
+        self, mock_get_config, mock_session_class
+    ):
+        """Test successful token refresh with client secret (Gmail)."""
         # Setup mock config
         mock_get_config.return_value = {
             "client_id": "test_client_id",
@@ -476,7 +476,7 @@ class TestRefreshAccessToken:
     @patch("inbox_reaper.oauth_flow.requests.post")
     @patch("inbox_reaper.oauth_flow.get_oauth_config")
     def test_token_refresh_without_client_secret(self, mock_get_config, mock_post):
-        """Test token refresh for provider without client secret (Outlook using device code flow)."""
+        """Test token refresh for provider without client secret (Outlook)."""
         # Setup mock config without client_secret
         mock_get_config.return_value = {
             "client_id": "test_client_id",
@@ -525,6 +525,6 @@ class TestRefreshAccessToken:
         # Test that exception is raised
         try:
             refresh_access_token("invalid_token", "gmail")
-            assert False, "Should have raised exception"
+            raise AssertionError("Should have raised exception")
         except Exception as e:
             assert "401 Unauthorized" in str(e)

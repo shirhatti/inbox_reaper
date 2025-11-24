@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Inbox Reaper - Application databases
+*.db
+checkpoints.db
+quarantine.db
+sender_stats.db
