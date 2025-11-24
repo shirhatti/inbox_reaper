@@ -35,7 +35,60 @@ The agent pipeline is defined in `dag.py`:
 ```bash
 # Install dependencies
 uv pip install -e .
+
+# Optional: Install Linux secret storage (for GNOME Keyring/KWallet)
+pip install -e .[linux]
 ```
+
+## Authentication
+
+Inbox Reaper uses OAuth 2.0 for secure email access. Credentials are stored securely using your system's native credential storage:
+- **macOS**: Keychain Access
+- **Windows**: DPAPI (Windows Credential Manager)
+- **Linux**: Secret Service (GNOME Keyring, KWallet, etc.)
+- **Fallback**: Encrypted file storage
+
+### Login to Email Account
+
+```bash
+# Gmail (auto-detected)
+inbox-reaper login user@gmail.com
+
+# Outlook/Hotmail (auto-detected)
+inbox-reaper login user@outlook.com
+
+# Specify provider explicitly
+inbox-reaper login user@company.com --provider gmail
+```
+
+This will:
+1. Open your browser for OAuth authentication
+2. Securely store your credentials
+3. Automatically refresh tokens when needed
+
+### Manage Accounts
+
+```bash
+# List all stored accounts
+inbox-reaper accounts
+
+# List with detailed information
+inbox-reaper accounts --verbose
+
+# Test IMAP connection
+inbox-reaper test user@gmail.com
+
+# Remove stored credentials
+inbox-reaper logout user@gmail.com
+```
+
+### OAuth Details
+
+Inbox Reaper uses **Thunderbird's public OAuth client IDs** for Gmail and Outlook, which means:
+- ✅ No need to create your own OAuth app
+- ✅ Works out of the box
+- ✅ Secure and privacy-focused
+- ⚠️ Credentials are stored locally on your machine only
 
 ## Usage
 
@@ -103,7 +156,8 @@ print(f"Deleted: {state.total_deleted}")
 
 ## Next Steps
 
-- [ ] Add IMAP email fetching
+- [x] Add OAuth 2.0 authentication with secure credential storage
+- [ ] Add IMAP email fetching using OAuth credentials
 - [ ] Add SQLite persistence for progress tracking
 - [ ] Implement batch database operations
 - [ ] Add concurrent AI classification (asyncio + semaphore)

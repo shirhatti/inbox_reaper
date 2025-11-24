@@ -9,6 +9,12 @@ dependencies = [
     "google-genai>=0.3.0",
     "ollama>=0.1.0",
     "pydantic>=2.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+linux = [
+    "secretstorage>=3.3.0",  # For Linux Secret Service (GNOME Keyring, KWallet)
 ]
 
 [project.optional-dependencies]
