@@ -19,8 +19,8 @@ from .agents import (
     check_whitelist,
     truncate_symmetric,
 )
-from .mlx_backend import generate_text_async
 from .langgraph_state import GraphState, email_dict_to_model, sender_stats_dict_to_model
+from .mlx_backend import generate_text_async
 from .state import (
     Config,
     Decision,

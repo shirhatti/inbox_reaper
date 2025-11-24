@@ -36,7 +36,8 @@ def get_mlx_model(model_name: str) -> tuple[Any, Any]:
     Subsequent calls return the cached model.
 
     Args:
-        model_name: Hugging Face model ID (e.g., "mlx-community/Llama-3.2-3B-Instruct-4bit")
+        model_name: Hugging Face model ID
+            (e.g., "mlx-community/Llama-3.2-3B-Instruct-4bit")
 
     Returns:
         Tuple of (model, tokenizer)
