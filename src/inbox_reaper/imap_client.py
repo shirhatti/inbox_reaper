@@ -95,16 +95,19 @@ class AsyncIMAPClient:
         """
         try:
             # Create connection
+            logger.info(f"Connecting to {self.host}:993...")
             self.client = aioimaplib.IMAP4_SSL(
                 host=self.host, port=993, timeout=self.timeout
             )
 
             # Wait for server greeting with timeout
+            logger.info("Waiting for server greeting...")
             await asyncio.wait_for(
                 self.client.wait_hello_from_server(), timeout=self.timeout
             )
 
             # Authenticate with XOAUTH2 with timeout
+            logger.info("Authenticating with OAuth2...")
             response = await asyncio.wait_for(
                 self.client.xoauth2(self.email_address, self.access_token),
                 timeout=self.timeout,
