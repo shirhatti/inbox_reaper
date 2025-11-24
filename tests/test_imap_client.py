@@ -152,7 +152,7 @@ class TestIMAPConnection:
             "refresh_token": "new_refresh_token",
         }
 
-        with patch("inbox_reaper.imap_client.store_credentials"):
+        with patch("inbox_reaper.credential_helper.store_credentials"):
             client = IMAPClient(email="user@gmail.com")
             client.connect()
 
@@ -589,7 +589,7 @@ class TestAuthenticationRefresh:
 
     @patch("inbox_reaper.imap_client.get_credentials")
     @patch("inbox_reaper.imap_client.refresh_access_token")
-    @patch("inbox_reaper.imap_client.store_credentials")
+    @patch("inbox_reaper.credential_helper.store_credentials")
     def test_refresh_access_token_success(
         self, mock_store, mock_refresh, mock_get_creds, mock_credentials
     ):

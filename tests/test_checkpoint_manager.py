@@ -210,12 +210,18 @@ class TestCheckpointIntegrity:
 
     def test_verify_checkpoint_integrity_nonexistent_file(self):
         """Test verifying integrity when database doesn't exist."""
-        CheckpointManager("nonexistent.db")
+        manager = CheckpointManager("nonexistent.db")
 
-        is_valid, message = checkpoint_manager.verify_checkpoint_integrity()
+        # Delete the database file to simulate nonexistent file
+        Path("nonexistent.db").unlink(missing_ok=True)
+
+        is_valid, message = manager.verify_checkpoint_integrity()
 
         assert is_valid is False
         assert "does not exist" in message.lower()
+
+        # Cleanup
+        Path("nonexistent.db").unlink(missing_ok=True)
 
     def test_verify_checkpoint_integrity_with_data(self, checkpoint_manager):
         """Test verifying integrity with populated checkpoint."""
