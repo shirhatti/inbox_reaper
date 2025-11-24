@@ -133,7 +133,7 @@ This will:
 uv pip install -e ".[dev]"
 
 # Install pre-commit hooks manually
-pre-commit install
+uv run pre-commit install
 ```
 
 ### Code Quality
@@ -145,7 +145,7 @@ pre-commit install
 
 ```bash
 # Run pre-commit hooks manually on all files
-pre-commit run --all-files
+uv run pre-commit run --all-files
 
 # Individual tool commands (optional)
 ruff check src/          # Lint

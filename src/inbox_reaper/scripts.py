@@ -12,7 +12,7 @@ def setup_dev():
     try:
         print("\n📦 Installing pre-commit hooks...")
         subprocess.run(
-            ["pre-commit", "install"],
+            ["uv", "run", "pre-commit", "install"],
             check=True,
             capture_output=True,
             text=True,
@@ -22,7 +22,7 @@ def setup_dev():
         # Run pre-commit on all files to ensure everything is set up correctly
         print("\n🔍 Running pre-commit checks on all files...")
         result = subprocess.run(
-            ["pre-commit", "run", "--all-files"],
+            ["uv", "run", "pre-commit", "run", "--all-files"],
             capture_output=True,
             text=True,
         )
@@ -38,11 +38,11 @@ def setup_dev():
         print("\nNext steps:")
         print("  - Make your changes")
         print("  - Pre-commit hooks will run automatically on git commit")
-        print("  - Or run manually: pre-commit run --all-files")
+        print("  - Or run manually: uv run pre-commit run --all-files")
 
     except FileNotFoundError:
         print(
-            "❌ Error: pre-commit not found. "
+            "❌ Error: uv or pre-commit not found. "
             "Install dev dependencies first: uv pip install -e '.[dev]'"
         )
         sys.exit(1)

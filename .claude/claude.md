@@ -22,7 +22,7 @@ This will:
 Pre-commit hooks will run automatically on `git commit`. However, if you want to run them manually on all files:
 
 ```bash
-pre-commit run --all-files
+uv run pre-commit run --all-files
 ```
 
 ### Why This Matters
@@ -41,10 +41,10 @@ If pre-commit hooks are not installed:
 
 ### Verification
 
-To check if pre-commit is installed:
+To check if pre-commit is available:
 
 ```bash
-pre-commit --version
+uv run pre-commit --version
 ```
 
 To check if hooks are installed in this repo:
