@@ -160,9 +160,7 @@ def process(
 
     # Validate required fields
     if not merged_config.get("email"):
-        click.echo(
-            "Error: --email is required (or must be in config file)", err=True
-        )
+        click.echo("Error: --email is required (or must be in config file)", err=True)
         raise click.Abort()
 
     # Create configuration object
