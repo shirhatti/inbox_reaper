@@ -3,6 +3,7 @@
 Provides a Click-based command-line interface for the email classification system.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -307,8 +308,8 @@ def test(email: str):
 
     # Test connection
     click.echo(f"\nTesting IMAP connection for {email}...")
-    success, message = verify_imap_connection(
-        email, creds["access_token"], creds["provider"]
+    success, message = asyncio.run(
+        verify_imap_connection(email, creds["access_token"], creds["provider"])
     )
 
     if success:
@@ -338,56 +339,78 @@ def fetch_email(email, uid, output):
 
     This is a debug command to inspect specific emails.
     """
-    from .imap_client import IMAPClient
+    from .imap_client import AsyncIMAPClient
 
-    # Get credentials
-    creds = credential_helper.get_credentials(email)
-    if not creds:
-        click.echo(
-            f"No credentials found for {email}. Please run 'inbox-reaper login' first.",
-            err=True,
+    async def _fetch():
+        # Get credentials
+        creds = credential_helper.get_credentials(email)
+        if not creds:
+            click.echo(
+                f"No credentials found for {email}. "
+                "Please run 'inbox-reaper login' first.",
+                err=True,
+            )
+            return False
+
+        # Refresh token if needed
+        if creds.get("refresh_token"):
+            try:
+                new_creds = refresh_access_token(
+                    creds["refresh_token"], creds["provider"]
+                )
+                creds.update(new_creds)
+            except Exception as e:
+                click.echo(f"Warning: Could not refresh token: {e}", err=True)
+
+        # Connect to IMAP
+        click.echo(f"Connecting to IMAP for {email}...")
+        client = AsyncIMAPClient(
+            email_address=email,
+            access_token=creds["access_token"],
+            provider=creds["provider"],
         )
-        return
 
-    # Refresh token if needed
-    if creds.get("refresh_token"):
         try:
-            new_creds = refresh_access_token(creds["refresh_token"], creds["provider"])
-            creds.update(new_creds)
-            # Note: credential_helper doesn't have save_credentials,
-            # tokens are managed internally
+            async with client:
+                await client.select_mailbox("INBOX")
+                click.echo(f"Fetching email UID {uid}...")
+
+                # Fetch the email
+                bodies = await client.fetch_bodies([uid])
+
+                if uid not in bodies:
+                    click.echo(f"Email with UID {uid} not found.", err=True)
+                    return False
+
+                email_data = bodies[uid]
+
+                # Convert to .eml format (simple text representation)
+                eml_content = f"""From: {email_data["sender"]}
+Subject: {email_data["subject"]}
+Date: {email_data["date"]}
+
+{email_data["body"]}
+"""
+
+                # Determine output path
+                output_path = output or f"email_{uid}.eml"
+
+                # Save to file
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(eml_content)
+
+                click.echo(f"✓ Email saved to {output_path}")
+                click.echo(f"  Size: {len(eml_content)} bytes")
+                click.echo(f"  Attachments: {email_data.get('attachments', [])}")
+
+                return True
+
         except Exception as e:
-            click.echo(f"Warning: Could not refresh token: {e}", err=True)
+            click.echo(f"Error fetching email: {e}", err=True)
+            return False
 
-    # Connect to IMAP
-    click.echo(f"Connecting to IMAP for {email}...")
-    client = IMAPClient(email=email, provider=creds["provider"])
-
-    try:
-        client.connect()
-        click.echo(f"Fetching email UID {uid}...")
-
-        email_data = client.fetch_full_email(uid)
-
-        if not email_data:
-            click.echo(f"Email with UID {uid} not found.", err=True)
-            return
-
-        # Determine output path
-        if not output:
-            output = f"email_{uid}.eml"
-
-        # Save to file
-        with open(output, "wb") as f:
-            f.write(email_data)
-
-        click.echo(f"✓ Email saved to {output}")
-        click.echo(f"  Size: {len(email_data)} bytes")
-
-    except Exception as e:
-        click.echo(f"Error fetching email: {e}", err=True)
-    finally:
-        client.disconnect()
+    # Run async function
+    asyncio.run(_fetch())
 
 
 def main():

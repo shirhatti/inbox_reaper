@@ -6,7 +6,6 @@ This module handles OAuth 2.0 authentication flows:
 - Token refresh
 """
 
-import imaplib
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -16,6 +15,7 @@ import requests
 from authlib.common.security import generate_token
 from authlib.integrations.requests_client import OAuth2Session
 
+from .imap_client import AsyncIMAPClient, IMAPAuthError, IMAPConnectionError
 from .oauth_config import get_oauth_config
 
 
@@ -317,21 +317,7 @@ def refresh_access_token(refresh_token: str, provider: str) -> dict:
         return response.json()  # type: ignore[no-any-return]
 
 
-def generate_xoauth2_string(email: str, access_token: str) -> str:
-    """Generate XOAUTH2 authentication string for IMAP/SMTP.
-
-    Args:
-        email: User's email address
-        access_token: OAuth access token
-
-    Returns:
-        Raw XOAUTH2 string (not base64-encoded, as imaplib will encode it)
-    """
-    auth_string = f"user={email}\x01auth=Bearer {access_token}\x01\x01"
-    return auth_string
-
-
-def verify_imap_connection(
+async def verify_imap_connection(
     email: str, access_token: str, provider: str
 ) -> tuple[bool, str]:
     """Verify IMAP connection with OAuth credentials.
@@ -345,32 +331,20 @@ def verify_imap_connection(
         Tuple of (success: bool, message: str)
     """
     try:
-        # Determine IMAP host
-        if provider == "gmail":
-            imap_host = "imap.gmail.com"
-        elif provider == "outlook":
-            imap_host = "outlook.office365.com"
-        else:
-            return False, f"Unknown provider: {provider}"
+        # Use async IMAP client
+        async with AsyncIMAPClient(email, access_token, provider) as client:
+            # Select INBOX to verify connection
+            mailbox_info = await client.select_mailbox("INBOX")
+            num_messages = mailbox_info.get("exists", 0)
 
-        # Connect to IMAP server
-        imap = imaplib.IMAP4_SSL(imap_host, 993)
-
-        # Authenticate using XOAUTH2
-        auth_string = generate_xoauth2_string(email, access_token)
-        imap.authenticate("XOAUTH2", lambda x: auth_string.encode())  # type: ignore[arg-type,return-value]
-
-        # Select INBOX to verify connection
-        imap.select("INBOX")
-        typ, data = imap.search(None, "ALL")
-
-        if typ == "OK":
-            num_messages = len(data[0].split())
-            imap.logout()
             return True, f"Connected successfully! {num_messages} messages in INBOX"
-        else:
-            imap.logout()
-            return False, "Failed to select INBOX"
 
-    except Exception as e:
+    except IMAPAuthError as e:
+        # Authentication failed - token may need refresh
+        return False, f"Authentication failed (token may need refresh): {str(e)}"
+    except IMAPConnectionError as e:
+        # Connection failed
         return False, f"Connection failed: {str(e)}"
+    except Exception as e:
+        # Unexpected error
+        return False, f"Unexpected error: {str(e)}"

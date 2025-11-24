@@ -4,19 +4,65 @@ This module implements a streaming architecture where emails are yielded one by 
 from an IMAP producer and processed through a LangGraph workflow.
 """
 
-import asyncio
 import logging
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from .batch_coordinator import BatchCoordinator
-from .imap_client import IMAPClient
+from .credential_helper import get_credentials
+from .imap_client import AsyncIMAPClient
+from .oauth_flow import refresh_access_token
 from .state import Config
 
 logger = logging.getLogger(__name__)
+
+
+async def create_imap_client(email: str) -> AsyncIMAPClient:
+    """Create an AsyncIMAPClient with credentials from keyring.
+
+    Args:
+        email: User's email address
+
+    Returns:
+        Connected AsyncIMAPClient instance
+
+    Raises:
+        ValueError: If credentials not found or expired
+    """
+    # Load credentials from keyring
+    creds = get_credentials(email)
+    if not creds:
+        raise ValueError(
+            f"No credentials found for {email}. Please run 'inbox-reaper login' first."
+        )
+
+    # Check if token is expired and refresh if needed
+    try:
+        expires_at = datetime.fromisoformat(creds.get("expires_at", ""))
+        if expires_at < datetime.now():
+            logger.info("Access token expired, refreshing...")
+            tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
+            creds["access_token"] = tokens["access_token"]
+            creds["expires_at"] = (
+                datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
+            ).isoformat()
+            # Note: We don't update stored credentials here to avoid import cycles
+            # The token will be valid for this session
+    except Exception as e:
+        logger.warning(f"Could not refresh token: {e}, using existing token")
+
+    # Create and return async client
+    client = AsyncIMAPClient(
+        email_address=email,
+        access_token=creds["access_token"],
+        provider=creds["provider"],
+    )
+
+    return client
 
 
 class StreamingState(TypedDict):
@@ -38,70 +84,68 @@ async def imap_producer(config: Config) -> AsyncIterator[dict]:
     Yields:
         Dictionary representing the initial state for an email
     """
-    # Create a dedicated client for the producer
-    client = IMAPClient(config.email)
-
-    # We need to run blocking IMAP calls in a thread
-    def _connect():
-        client.connect()
-
-    await asyncio.to_thread(_connect)
+    # Create async IMAP client with credentials
+    client = await create_imap_client(config.email)
 
     try:
-        # 1. Get all UIDs to find the real maximum (in case latest_uid is a sentinel)
-        logger.info("Searching for all UIDs...")
-        all_uids_bytes = await asyncio.to_thread(client.search_uids, criteria="ALL")
+        # Connect and select mailbox
+        async with client:
+            await client.select_mailbox("INBOX")
 
-        if not all_uids_bytes:
-            logger.info("No emails found.")
-            return
+            # 1. Search for all UIDs
+            logger.info("Searching for all UIDs...")
+            all_uids_str = await client.search_uids(criteria="ALL")
 
-        # Convert to int and find max
-        all_uids = [int(uid) for uid in all_uids_bytes]
-        max_uid = max(all_uids)
-        logger.info(f"Found {len(all_uids)} emails, max UID is {max_uid}")
+            if not all_uids_str:
+                logger.info("No emails found.")
+                return
 
-        # Sort descending for newest-first processing
-        all_uids.sort(reverse=True)
+            # Convert to int and find max
+            all_uids = [int(uid) for uid in all_uids_str]
+            max_uid = max(all_uids)
+            logger.info(f"Found {len(all_uids)} emails, max UID is {max_uid}")
 
-        # Apply max_emails limit if set
-        if config.max_emails:
-            all_uids = all_uids[: config.max_emails]
-            logger.info(f"Limiting to {len(all_uids)} newest emails")
+            # Sort descending for newest-first processing
+            all_uids.sort(reverse=True)
 
-        # 2. Fetch headers in batches
-        fetch_batch_size = config.fetch_size
-        total_yielded = 0
+            # Apply max_emails limit if set
+            if config.max_emails:
+                all_uids = all_uids[: config.max_emails]
+                logger.info(f"Limiting to {len(all_uids)} newest emails")
 
-        for i in range(0, len(all_uids), fetch_batch_size):
-            batch = all_uids[i : i + fetch_batch_size]
-            batch_str = [str(uid) for uid in batch]
+            # 2. Fetch headers in batches
+            fetch_batch_size = config.fetch_size
+            total_yielded = 0
 
-            logger.info(
-                f"Fetching headers for {len(batch)} emails "
-                f"(batch {i // fetch_batch_size + 1})"
-            )
+            for i in range(0, len(all_uids), fetch_batch_size):
+                batch = all_uids[i : i + fetch_batch_size]
+                batch_str = [str(uid) for uid in batch]
 
-            headers = await asyncio.to_thread(client.fetch_headers, uids=batch_str)
+                logger.info(
+                    f"Fetching headers for {len(batch)} emails "
+                    f"(batch {i // fetch_batch_size + 1})"
+                )
 
-            # Yield each email
-            for uid_int in batch:
-                uid_str = str(uid_int)
-                if uid_str in headers:
-                    yield {
-                        "email_uid": uid_str,
-                        "email": headers[uid_str],
-                        "operation": "process",
-                        "decision": None,
-                        "reason": None,
-                        "config": config.model_dump(),
-                    }
-                    total_yielded += 1
+                # Native async header fetch - no thread wrapper needed!
+                headers = await client.fetch_headers(uids=batch_str)
+
+                # Yield each email
+                for uid_int in batch:
+                    uid_str = str(uid_int)
+                    if uid_str in headers:
+                        yield {
+                            "email_uid": uid_str,
+                            "email": headers[uid_str],
+                            "operation": "process",
+                            "decision": None,
+                            "reason": None,
+                            "config": config.model_dump(),
+                        }
+                        total_yielded += 1
 
     except Exception as e:
         logger.error(f"Error in IMAP producer: {e}")
-    finally:
-        await asyncio.to_thread(client.disconnect)
+        raise
 
 
 async def process_email_node(state: StreamingState) -> StreamingState:
@@ -110,6 +154,8 @@ async def process_email_node(state: StreamingState) -> StreamingState:
     Runs deterministic filters and optionally AI classification.
     Fetches email body and applies full classification pipeline.
     """
+    import asyncio
+
     from .agents import (
         check_attachments,
         check_keywords,
@@ -126,36 +172,38 @@ async def process_email_node(state: StreamingState) -> StreamingState:
     # Reconstruct Config from serialized dict
     config = Config.model_validate(state["config"])
 
-    # Fetch email body using a dedicated connection
-    # We can't share the producer's connection, so we create a new one
-    client = IMAPClient(config.email)
+    # Create async IMAP client for fetching body
+    client = await create_imap_client(config.email)
 
     try:
-        # Connect and fetch the full email body
-        await asyncio.to_thread(client.connect)
-        bodies = await asyncio.to_thread(client.batch_fetch_bodies, [uid])
+        # Connect and fetch the full email body - native async!
+        async with client:
+            await client.select_mailbox("INBOX")
+            bodies = await client.fetch_bodies([uid])
 
-        # Check if we got the body
-        if uid not in bodies:
-            logger.warning(f"Failed to fetch body for email {uid}, keeping by default")
-            return {
-                **state,
-                "operation": "keep",
-                "decision": "keep",
-                "reason": "fetch_failed",
-            }
+            # Check if we got the body
+            if uid not in bodies:
+                logger.warning(
+                    f"Failed to fetch body for email {uid}, keeping by default"
+                )
+                return {
+                    **state,
+                    "operation": "keep",
+                    "decision": "keep",
+                    "reason": "fetch_failed",
+                }
 
-        body_data = bodies[uid]
+            body_data = bodies[uid]
 
-        # Create Email object
-        email = Email(
-            uid=uid,
-            subject=body_data["subject"],
-            sender=body_data["sender"],
-            body=body_data["body"],
-            date=body_data["date"],
-            attachments=body_data["attachments"],
-        )
+            # Create Email object
+            email = Email(
+                uid=uid,
+                subject=body_data["subject"],
+                sender=body_data["sender"],
+                body=body_data["body"],
+                date=body_data["date"],
+                attachments=body_data["attachments"],
+            )
 
         # Apply deterministic filters in order
         decision_obj = None
@@ -206,7 +254,8 @@ async def process_email_node(state: StreamingState) -> StreamingState:
             }
 
         # 4. If no deterministic filter matched, use AI classifier
-        # Note: We run this in a thread since classify_with_ai is blocking
+        # Note: classify_with_ai is still blocking (uses Ollama sync client)
+        # We wrap it in a thread to avoid blocking the event loop
         decision_obj = await asyncio.to_thread(classify_with_ai, email, config)
 
         logger.info(
@@ -231,8 +280,6 @@ async def process_email_node(state: StreamingState) -> StreamingState:
             "decision": "keep",
             "reason": f"error: {str(e)}",
         }
-    finally:
-        await asyncio.to_thread(client.disconnect)
 
 
 def build_streaming_graph() -> CompiledStateGraph:
@@ -258,14 +305,14 @@ async def run_streaming_pipeline(config: Config):
             logger.info(f"DRY RUN: Would delete {uids}")
             return
 
-        # Create a transient client for deletion
-        # In a real app, use a connection pool
-        client = IMAPClient(config.email)
+        # Create async IMAP client for deletion - native async!
+        client = await create_imap_client(config.email)
         try:
-            await asyncio.to_thread(client.connect)
-            await asyncio.to_thread(client.batch_delete, uids, dry_run=False)
-        finally:
-            await asyncio.to_thread(client.disconnect)
+            async with client:
+                await client.select_mailbox("INBOX")
+                await client.delete_emails(uids)
+        except Exception as e:
+            logger.error(f"Error deleting emails: {e}")
 
     batch_coordinator = BatchCoordinator(
         processor=execute_deletes,

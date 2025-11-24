@@ -1,9 +1,10 @@
 """Tests for OAuth authentication flow."""
 
-from unittest.mock import Mock, call, patch
+import asyncio
+from unittest.mock import AsyncMock, Mock, call, patch
 
+from inbox_reaper.imap_client import generate_xoauth2_string
 from inbox_reaper.oauth_flow import (
-    generate_xoauth2_string,
     perform_oauth_flow,
     refresh_access_token,
     verify_imap_connection,
@@ -281,19 +282,19 @@ class TestPerformOAuthFlow:
 class TestVerifyImapConnection:
     """Tests for IMAP connection verification."""
 
-    @patch("imaplib.IMAP4_SSL")
-    def test_successful_gmail_connection(self, mock_imap_class):
+    @patch("inbox_reaper.oauth_flow.AsyncIMAPClient")
+    def test_successful_gmail_connection(self, mock_client_class):
         """Test successful Gmail IMAP connection."""
-        # Setup mock
-        mock_imap = Mock()
-        mock_imap_class.return_value = mock_imap
-        mock_imap.authenticate.return_value = ("OK", [b"Success"])
-        mock_imap.select.return_value = ("OK", [b"10"])
-        mock_imap.search.return_value = ("OK", [b"1 2 3 4 5 6 7 8 9 10"])
+        # Setup mock client
+        mock_client = AsyncMock()
+        mock_client.select_mailbox.return_value = {"exists": 10, "recent": 2}
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client_class.return_value = mock_client
 
-        # Test connection
-        success, message = verify_imap_connection(
-            "test@gmail.com", "access_token_123", "gmail"
+        # Test connection (run async function)
+        success, message = asyncio.run(
+            verify_imap_connection("test@gmail.com", "access_token_123", "gmail")
         )
 
         # Verify results
@@ -301,25 +302,25 @@ class TestVerifyImapConnection:
         assert "Connected successfully" in message
         assert "10 messages" in message
 
-        # Verify IMAP calls
-        mock_imap_class.assert_called_once_with("imap.gmail.com", 993)
-        mock_imap.authenticate.assert_called_once()
-        mock_imap.select.assert_called_once_with("INBOX")
-        mock_imap.logout.assert_called_once()
+        # Verify client was created correctly
+        mock_client_class.assert_called_once_with(
+            "test@gmail.com", "access_token_123", "gmail"
+        )
+        mock_client.select_mailbox.assert_called_once_with("INBOX")
 
-    @patch("imaplib.IMAP4_SSL")
-    def test_successful_outlook_connection(self, mock_imap_class):
+    @patch("inbox_reaper.oauth_flow.AsyncIMAPClient")
+    def test_successful_outlook_connection(self, mock_client_class):
         """Test successful Outlook IMAP connection."""
-        # Setup mock
-        mock_imap = Mock()
-        mock_imap_class.return_value = mock_imap
-        mock_imap.authenticate.return_value = ("OK", [b"Success"])
-        mock_imap.select.return_value = ("OK", [b"5"])
-        mock_imap.search.return_value = ("OK", [b"1 2 3 4 5"])
+        # Setup mock client
+        mock_client = AsyncMock()
+        mock_client.select_mailbox.return_value = {"exists": 5, "recent": 1}
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client_class.return_value = mock_client
 
         # Test connection
-        success, message = verify_imap_connection(
-            "test@outlook.com", "access_token_456", "outlook"
+        success, message = asyncio.run(
+            verify_imap_connection("test@outlook.com", "access_token_456", "outlook")
         )
 
         # Verify results
@@ -327,98 +328,82 @@ class TestVerifyImapConnection:
         assert "Connected successfully" in message
         assert "5 messages" in message
 
-        # Verify correct IMAP host
-        mock_imap_class.assert_called_once_with("outlook.office365.com", 993)
+        # Verify correct provider passed
+        mock_client_class.assert_called_once_with(
+            "test@outlook.com", "access_token_456", "outlook"
+        )
 
-    @patch("imaplib.IMAP4_SSL")
-    def test_authentication_callback_returns_bytes(self, mock_imap_class):
-        """Test that authenticate callback returns bytes, not string."""
-        # Setup mock to capture the callback
-        mock_imap = Mock()
-        mock_imap_class.return_value = mock_imap
-        mock_imap.search.return_value = ("OK", [b""])
-
-        callback = None
-
-        def capture_callback(mechanism, cb):
-            nonlocal callback
-            callback = cb
-            return ("OK", [b"Success"])
-
-        mock_imap.authenticate.side_effect = capture_callback
-
-        # Test connection
-        verify_imap_connection("test@gmail.com", "token", "gmail")
-
-        # Verify callback returns bytes
-        assert callback is not None
-        result = callback(b"")
-        assert isinstance(result, bytes)
-
-    @patch("imaplib.IMAP4_SSL")
-    def test_unknown_provider(self, mock_imap_class):
+    @patch("inbox_reaper.oauth_flow.AsyncIMAPClient")
+    def test_unknown_provider(self, mock_client_class):
         """Test handling of unknown provider."""
-        success, message = verify_imap_connection(
-            "test@example.com", "token", "unknown_provider"
+        # Setup mock to raise ValueError for unknown provider
+        mock_client_class.side_effect = ValueError("Unknown provider: unknown_provider")
+
+        success, message = asyncio.run(
+            verify_imap_connection("test@example.com", "token", "unknown_provider")
         )
 
         assert success is False
-        assert "Unknown provider" in message
-        mock_imap_class.assert_not_called()
+        assert "Unexpected error" in message or "Unknown provider" in message
 
-    @patch("imaplib.IMAP4_SSL")
-    def test_authentication_failure(self, mock_imap_class):
+    @patch("inbox_reaper.oauth_flow.AsyncIMAPClient")
+    def test_authentication_failure(self, mock_client_class):
         """Test handling of authentication failure."""
-        # Setup mock to raise exception
-        mock_imap = Mock()
-        mock_imap_class.return_value = mock_imap
-        mock_imap.authenticate.side_effect = Exception(
-            "AUTHENTICATE command error: BAD"
+        # Import the exception class
+        from inbox_reaper.imap_client import IMAPAuthError
+
+        # Setup mock to raise authentication error
+        mock_client = AsyncMock()
+        mock_client.__aenter__.side_effect = IMAPAuthError(
+            "OAuth authentication failed"
         )
+        mock_client_class.return_value = mock_client
 
         # Test connection
-        success, message = verify_imap_connection(
-            "test@gmail.com", "invalid_token", "gmail"
+        success, message = asyncio.run(
+            verify_imap_connection("test@gmail.com", "invalid_token", "gmail")
+        )
+
+        # Verify failure
+        assert success is False
+        assert "Authentication failed" in message
+        assert "token may need refresh" in message
+
+    @patch("inbox_reaper.oauth_flow.AsyncIMAPClient")
+    def test_connection_failure(self, mock_client_class):
+        """Test handling of connection failure."""
+        # Import the exception class
+        from inbox_reaper.imap_client import IMAPConnectionError
+
+        # Setup mock to raise connection error
+        mock_client = AsyncMock()
+        mock_client.__aenter__.side_effect = IMAPConnectionError(
+            "Failed to connect to IMAP server"
+        )
+        mock_client_class.return_value = mock_client
+
+        # Test connection
+        success, message = asyncio.run(
+            verify_imap_connection("test@gmail.com", "token", "gmail")
         )
 
         # Verify failure
         assert success is False
         assert "Connection failed" in message
-        assert "AUTHENTICATE command error" in message
 
-    @patch("imaplib.IMAP4_SSL")
-    def test_select_inbox_failure(self, mock_imap_class):
-        """Test handling of SELECT INBOX failure."""
-        # Setup mock
-        mock_imap = Mock()
-        mock_imap_class.return_value = mock_imap
-        mock_imap.authenticate.return_value = ("OK", [b"Success"])
-        mock_imap.select.return_value = ("OK", [b"0"])
-        mock_imap.search.return_value = ("NO", [])
-
-        # Test connection
-        success, message = verify_imap_connection(
-            "test@gmail.com", "access_token", "gmail"
-        )
-
-        # Verify failure
-        assert success is False
-        assert "Failed to select INBOX" in message
-        mock_imap.logout.assert_called_once()
-
-    @patch("imaplib.IMAP4_SSL")
-    def test_empty_inbox(self, mock_imap_class):
+    @patch("inbox_reaper.oauth_flow.AsyncIMAPClient")
+    def test_empty_inbox(self, mock_client_class):
         """Test connection with empty inbox."""
-        # Setup mock
-        mock_imap = Mock()
-        mock_imap_class.return_value = mock_imap
-        mock_imap.authenticate.return_value = ("OK", [b"Success"])
-        mock_imap.select.return_value = ("OK", [b"0"])
-        mock_imap.search.return_value = ("OK", [b""])
+        # Setup mock client
+        mock_client = AsyncMock()
+        mock_client.select_mailbox.return_value = {"exists": 0}
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client_class.return_value = mock_client
 
         # Test connection
-        success, message = verify_imap_connection(
-            "test@gmail.com", "access_token", "gmail"
+        success, message = asyncio.run(
+            verify_imap_connection("test@gmail.com", "access_token", "gmail")
         )
 
         # Verify success with 0 messages

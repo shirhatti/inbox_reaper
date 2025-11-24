@@ -1,16 +1,20 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from inbox_reaper.langgraph_streaming import run_streaming_pipeline
 from inbox_reaper.state import Config
 
 
 class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
-    @patch("inbox_reaper.langgraph_streaming.IMAPClient")
-    async def test_streaming_pipeline(self, mock_imap_client_cls):
+    @patch("inbox_reaper.langgraph_streaming.create_imap_client")
+    async def test_streaming_pipeline(self, mock_create_client):
         # Setup mock client
-        mock_client = MagicMock()
-        mock_imap_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_create_client.return_value = mock_client
+
+        # Mock context manager behavior
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
 
         # Mock search_uids to return all UIDs
         mock_client.search_uids.return_value = ["1", "2"]
@@ -37,18 +41,15 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
         await run_streaming_pipeline(config)
 
         # Verify interactions
-        mock_client.connect.assert_called()
-        mock_client.disconnect.assert_called()
-
-        # Should search with ALL criteria
+        mock_create_client.assert_called()
+        mock_client.select_mailbox.assert_called_with("INBOX")
         mock_client.search_uids.assert_called_with(criteria="ALL")
-        mock_client.search_uids.assert_called()
         mock_client.fetch_headers.assert_called()
 
-    @patch("inbox_reaper.langgraph_streaming.IMAPClient")
+    @patch("inbox_reaper.langgraph_streaming.create_imap_client")
     @patch("inbox_reaper.langgraph_streaming.BatchCoordinator")
     async def test_streaming_pipeline_deletes(
-        self, mock_coordinator_cls, mock_imap_client_cls
+        self, mock_coordinator_cls, mock_create_client
     ):
         # Mock coordinator
         mock_coordinator = MagicMock()
@@ -58,8 +59,12 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
         mock_coordinator.flush = unittest.mock.AsyncMock()
 
         # Setup mock client
-        mock_client = MagicMock()
-        mock_imap_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_create_client.return_value = mock_client
+
+        # Mock context manager behavior
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
 
         # Mock search_uids to return all UIDs
         mock_client.search_uids.return_value = ["1", "2"]
@@ -99,11 +104,15 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
         # the coroutine in the mock. But we can verify flush was called
         mock_coordinator.flush.assert_called_once()
 
-    @patch("inbox_reaper.langgraph_streaming.IMAPClient")
-    async def test_streaming_pipeline_max_emails(self, mock_imap_client_cls):
+    @patch("inbox_reaper.langgraph_streaming.create_imap_client")
+    async def test_streaming_pipeline_max_emails(self, mock_create_client):
         # Setup mock client
-        mock_client = MagicMock()
-        mock_imap_client_cls.return_value = mock_client
+        mock_client = AsyncMock()
+        mock_create_client.return_value = mock_client
+
+        # Mock context manager behavior
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
 
         # Mock search_uids to return all UIDs (simulating 100 emails)
         # Return even UIDs from 2 to 100
