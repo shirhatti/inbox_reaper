@@ -539,7 +539,6 @@ class TestTokenRefreshOnExpiry:
         }
 
         # Setup: refresh returns new token
-        new_expiry_time = datetime.now() + timedelta(hours=1)
         mock_refresh.return_value = {
             "access_token": "new_fresh_token",
             "expires_in": 3600,
@@ -602,6 +601,9 @@ class TestTokenRefreshOnExpiry:
         assert call_kwargs["email_address"] == "test@outlook.com"
         assert call_kwargs["provider"] == "outlook"
 
+        # Verify: result is the client instance
+        assert result == mock_client
+
     @patch("inbox_reaper.langgraph_streaming.refresh_access_token")
     @patch("inbox_reaper.langgraph_streaming.get_credentials")
     @patch("inbox_reaper.langgraph_streaming.AsyncIMAPClient")
@@ -640,7 +642,8 @@ class TestTokenRefreshOnExpiry:
         call_kwargs = mock_client_class.call_args[1]
         assert call_kwargs["access_token"] == "old_expired_token"
 
-        # Verify: result is still returned (will fail on actual connect, but client created)
+        # Verify: result is still returned
+        # (will fail on actual connect, but client created)
         assert result == mock_client
 
     @patch("inbox_reaper.langgraph_streaming.AsyncIMAPClient")
@@ -649,7 +652,7 @@ class TestTokenRefreshOnExpiry:
     def test_create_imap_client_handles_invalid_expires_at_types(
         self, mock_refresh, mock_get_creds, mock_client_class
     ):
-        """Test that create_imap_client handles non-string expires_at values gracefully."""
+        """Test create_imap_client handles non-string expires_at values."""
         from inbox_reaper.langgraph_streaming import create_imap_client
 
         # Test with None expires_at
@@ -673,6 +676,9 @@ class TestTokenRefreshOnExpiry:
         mock_client_class.assert_called_once()
         call_kwargs = mock_client_class.call_args[1]
         assert call_kwargs["access_token"] == "valid_token"
+
+        # Verify: result is the client instance
+        assert result == mock_client
 
         # Reset mocks for next test
         mock_refresh.reset_mock()
@@ -700,3 +706,6 @@ class TestTokenRefreshOnExpiry:
         assert mock_client_class.call_count == 1
         call_kwargs2 = mock_client_class.call_args[1]
         assert call_kwargs2["access_token"] == "another_token"
+
+        # Verify: result is the client instance
+        assert result2 == mock_client2
