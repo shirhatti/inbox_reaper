@@ -471,15 +471,20 @@ def diagnose(email: str, refresh: bool):
             except Exception as e:
                 click.echo(f"Error parsing expires_at: {e}", err=True)
         else:
-            click.echo(f"WARNING: expires_at is not a string: {expires_at_str}", err=True)
+            click.echo(
+                f"WARNING: expires_at is not a string: {expires_at_str}", err=True
+            )
     else:
         click.echo("WARNING: expires_at is missing or None", err=True)
 
     # Try to decode access token as JWT
     access_token = creds.get("access_token", "")
-    click.echo(f"\n--- Access Token ---")
+    click.echo("\n--- Access Token ---")
     click.echo(f"Token length: {len(access_token)} characters")
-    click.echo(f"Token preview: {access_token[:50]}..." if len(access_token) > 50 else f"Token: {access_token}")
+    if len(access_token) > 50:
+        click.echo(f"Token preview: {access_token[:50]}...")
+    else:
+        click.echo(f"Token: {access_token}")
 
     # Check if it looks like a JWT (has 3 parts separated by dots)
     parts = access_token.split(".")
@@ -520,7 +525,9 @@ def diagnose(email: str, refresh: bool):
         except Exception as e:
             click.echo(f"\nError decoding JWT: {e}", err=True)
     else:
-        click.echo(f"\nToken does not appear to be a JWT (has {len(parts)} parts, expected 3)")
+        click.echo(
+            f"\nToken does not appear to be a JWT (has {len(parts)} parts, expected 3)"
+        )
 
     # Test token refresh if requested
     if refresh:
@@ -544,7 +551,10 @@ def diagnose(email: str, refresh: bool):
             for key, value in tokens.items():
                 if key in ["access_token", "refresh_token"]:
                     # Mask sensitive values
-                    preview = f"{value[:20]}...{value[-10:]}" if len(value) > 30 else value[:30]
+                    if len(value) > 30:
+                        preview = f"{value[:20]}...{value[-10:]}"
+                    else:
+                        preview = value[:30]
                     click.echo(f"  {key}: {preview}")
                 else:
                     click.echo(f"  {key}: {value}")
@@ -552,15 +562,22 @@ def diagnose(email: str, refresh: bool):
             # Check if expires_in is present
             expires_in = tokens.get("expires_in")
             if expires_in:
-                click.echo(f"\n✓ expires_in present: {expires_in} seconds ({expires_in/3600:.1f} hours)")
+                hours = expires_in / 3600
+                click.echo(
+                    f"\n✓ expires_in present: {expires_in} seconds ({hours:.1f} hours)"
+                )
                 future_expiry = datetime.now() + timedelta(seconds=expires_in)
                 click.echo(f"  Would expire at: {future_expiry.isoformat()}")
             else:
-                click.echo("\n✗ WARNING: expires_in NOT present in refresh response", err=True)
+                click.echo(
+                    "\n✗ WARNING: expires_in NOT present in refresh response",
+                    err=True,
+                )
 
         except Exception as e:
             click.echo(f"\nError during token refresh: {e}", err=True)
             import traceback
+
             click.echo(traceback.format_exc(), err=True)
 
 
