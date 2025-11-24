@@ -71,9 +71,7 @@ def build_dag(client: genai.Client) -> genai.Agent:
         Configured agent that can process email batches
     """
     # Create function declarations for each agent
-    agent_functions = [
-        create_agent_function(name, fn) for name, fn in AGENT_PIPELINE
-    ]
+    agent_functions = [create_agent_function(name, fn) for name, fn in AGENT_PIPELINE]
 
     # Create the root agent
     # Note: For initial scaffold, we're using a simple sequential flow

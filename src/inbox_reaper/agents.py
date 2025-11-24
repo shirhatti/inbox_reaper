@@ -278,9 +278,7 @@ def log_progress_agent(state: ProcessingState) -> ProcessingState:
         print(f"\n=== Decision Breakdown ===")
         reason_counts = {}
         for d in state.decisions:
-            reason_counts[d.reason.value] = (
-                reason_counts.get(d.reason.value, 0) + 1
-            )
+            reason_counts[d.reason.value] = reason_counts.get(d.reason.value, 0) + 1
         for reason, count in sorted(reason_counts.items()):
             print(f"  {reason}: {count}")
 
@@ -293,6 +291,8 @@ def check_termination_agent(state: ProcessingState) -> ProcessingState:
     Pure function that adds an error if termination condition met.
     """
     if state.consecutive_empty_batches >= 3:
-        return state.add_error("No new emails found in 3 consecutive batches. Terminating.")
+        return state.add_error(
+            "No new emails found in 3 consecutive batches. Terminating."
+        )
 
     return state

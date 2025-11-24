@@ -113,9 +113,7 @@ def process(
     click.echo(f"  Concurrent limit: {config.concurrent_ai_limit}")
     click.echo(f"  Dry run: {config.dry_run}")
     click.echo(f"  Keywords: {config.keywords or 'None'}")
-    click.echo(
-        f"  Whitelisted domains: {config.whitelist_domains or 'None'}"
-    )
+    click.echo(f"  Whitelisted domains: {config.whitelist_domains or 'None'}")
 
     # Create mock emails for demonstration
     mock_emails = create_mock_emails()
@@ -123,9 +121,7 @@ def process(
     click.echo(f"\n📧 Processing {len(mock_emails)} mock emails...")
 
     # Create initial state
-    initial_state = ProcessingState(
-        config=config, emails=mock_emails
-    )
+    initial_state = ProcessingState(config=config, emails=mock_emails)
 
     # Run the pipeline
     if use_adk:
@@ -136,9 +132,7 @@ def process(
             client = genai.Client()
             final_state = run_pipeline_with_adk(initial_state, client)
         except Exception as e:
-            click.echo(
-                f"\n⚠️  ADK initialization failed: {e}", err=True
-            )
+            click.echo(f"\n⚠️  ADK initialization failed: {e}", err=True)
             click.echo("   Falling back to simple pipeline...\n")
             final_state = run_pipeline(initial_state)
     else:

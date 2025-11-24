@@ -150,9 +150,7 @@ class ProcessingState(BaseModel):
 
         # Update sender stats
         sender = decision.email.sender
-        current_stats = self.sender_stats.get(
-            sender, SenderStats(sender=sender)
-        )
+        current_stats = self.sender_stats.get(sender, SenderStats(sender=sender))
 
         new_sender_stats = self.sender_stats.copy()
         new_sender_stats[sender] = SenderStats(
@@ -160,10 +158,11 @@ class ProcessingState(BaseModel):
             total_count=current_stats.total_count + 1,
             marketing_count=current_stats.marketing_count
             + (1 if decision.decision == Decision.DELETE else 0),
-            auto_delete=current_stats.marketing_count + 1
-            >= self.config.auto_delete_threshold
-            if decision.decision == Decision.DELETE
-            else current_stats.auto_delete,
+            auto_delete=(
+                current_stats.marketing_count + 1 >= self.config.auto_delete_threshold
+                if decision.decision == Decision.DELETE
+                else current_stats.auto_delete
+            ),
         )
 
         return self.model_copy(
@@ -187,10 +186,7 @@ class ProcessingState(BaseModel):
         """Pure function to update current batch and pagination."""
         if not emails:
             return self.model_copy(
-                update={
-                    "consecutive_empty_batches": self.consecutive_empty_batches
-                    + 1
-                }
+                update={"consecutive_empty_batches": self.consecutive_empty_batches + 1}
             )
 
         uids = [email.uid for email in emails]
