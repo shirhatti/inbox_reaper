@@ -12,7 +12,7 @@ from . import credential_helper
 from .dag import run_pipeline, run_pipeline_with_adk
 from .oauth_config import detect_provider
 from .oauth_flow import perform_oauth_flow, refresh_access_token, test_imap_connection
-from .state import Config, Email, ProcessingState
+from .state import Config, Email, LLMProvider, ProcessingState
 
 
 @click.group()
@@ -29,15 +29,22 @@ def cli():
 
 @cli.command()
 @click.option(
+    "--provider",
+    type=click.Choice(["ollama", "claude"]),
+    default="ollama",
+    help="LLM provider for AI classification",
+    show_default=True,
+)
+@click.option(
     "--model",
     default="gemma2:2b",
-    help="Ollama model name for AI classification",
+    help="Model name (e.g., 'gemma2:2b' for Ollama, 'claude-sonnet-4-5' for Claude)",
     show_default=True,
 )
 @click.option(
     "--ollama-url",
     default="http://localhost:11434",
-    help="Ollama base URL",
+    help="Ollama base URL (only used with --provider ollama)",
     show_default=True,
 )
 @click.option(
@@ -77,6 +84,7 @@ def cli():
     help="Whitelisted domains to trigger KEEP (can specify multiple times)",
 )
 def process(
+    provider: str,
     model: str,
     ollama_url: str,
     batch_size: int,
@@ -91,14 +99,40 @@ def process(
     This command runs the email classification agent on a batch of emails.
     Currently uses mock data for demonstration purposes.
 
-    Example:
+    Examples:
+        # Using Ollama (local)
+        inbox-reaper process --provider ollama --model gemma2:2b
+
+        # Using Claude (requires ANTHROPIC_API_KEY)
+        inbox-reaper process --provider claude --model claude-sonnet-4-5
+
+        # With filters
         inbox-reaper process --keywords "important" --whitelist-domain "gmail.com"
     """
     click.echo("🚀 Inbox Reaper - Email Classification System")
     click.echo("=" * 60)
 
+    # Convert provider string to enum
+    llm_provider = LLMProvider.CLAUDE if provider == "claude" else LLMProvider.OLLAMA
+
+    # Validate provider-specific requirements
+    if llm_provider == LLMProvider.CLAUDE:
+        import os
+
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            click.echo(
+                "\n⚠️  Error: ANTHROPIC_API_KEY environment variable not set.",
+                err=True,
+            )
+            click.echo("   Set it with: export ANTHROPIC_API_KEY='your-api-key'")
+            click.echo(
+                "   Or get your API key from: https://console.anthropic.com/settings/keys\n"
+            )
+            return
+
     # Create configuration
     config = Config(
+        provider=llm_provider,
         model_name=model,
         ollama_base_url=ollama_url,
         batch_size=batch_size,
@@ -109,8 +143,10 @@ def process(
     )
 
     click.echo("\n📋 Configuration:")
+    click.echo(f"  Provider: {config.provider.value}")
     click.echo(f"  Model: {config.model_name}")
-    click.echo(f"  Ollama URL: {config.ollama_base_url}")
+    if config.provider == LLMProvider.OLLAMA:
+        click.echo(f"  Ollama URL: {config.ollama_base_url}")
     click.echo(f"  Batch size: {config.batch_size}")
     click.echo(f"  Concurrent limit: {config.concurrent_ai_limit}")
     click.echo(f"  Dry run: {config.dry_run}")

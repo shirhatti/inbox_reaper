@@ -19,7 +19,7 @@ Each agent is a pure function: `ProcessingState -> ProcessingState` (`agents.py`
 2. **keyword_filter_agent** - Check for critical keywords
 3. **whitelist_filter_agent** - Check against whitelisted domains
 4. **sender_pattern_filter_agent** - Check sender history patterns
-5. **ai_classifier_agent** - AI classification using Ollama (only non-pure)
+5. **ai_classifier_agent** - AI classification using Ollama or Claude (only non-pure)
 6. **log_progress_agent** - Display progress
 7. **check_termination_agent** - Determine if processing should stop
 
@@ -97,23 +97,54 @@ Inbox Reaper uses **Thunderbird's public OAuth client IDs** for Gmail and Outloo
 ### Basic Usage (Mock Emails)
 
 ```bash
-# Run with defaults (dry-run mode, gemma2:2b model)
+# Run with defaults (dry-run mode, Ollama with gemma2:2b model)
 inbox-reaper process
 
-# Customize model and settings
-inbox-reaper process --model llama3.2:3b --batch-size 100
+# Using Ollama with custom model
+inbox-reaper process --provider ollama --model llama3.2:3b
+
+# Using Claude (requires ANTHROPIC_API_KEY)
+export ANTHROPIC_API_KEY='your-api-key-here'
+inbox-reaper process --provider claude --model claude-sonnet-4-5
 
 # Add keywords and whitelisted domains
 inbox-reaper process \
+  --provider ollama \
   --keywords "important" \
   --keywords "Mario Romo" \
   --whitelist-domain "gmail.com" \
   --whitelist-domain "wellsfargo.com"
 ```
 
+### LLM Provider Options
+
+#### Ollama (Local, Free)
+```bash
+# Make sure Ollama is running locally
+ollama serve
+
+# Use with inbox-reaper
+inbox-reaper process --provider ollama --model gemma2:2b
+```
+
+#### Claude (Cloud, Requires Subscription)
+```bash
+# Set your Anthropic API key
+export ANTHROPIC_API_KEY='your-api-key-here'
+
+# Use with inbox-reaper
+inbox-reaper process --provider claude --model claude-sonnet-4-5
+
+# Available Claude models:
+# - claude-sonnet-4-5 (latest, recommended)
+# - claude-opus-4
+# - claude-3-5-sonnet-20241022
+```
+
 ### Options
 
-- `--model TEXT` - Ollama model name (default: gemma2:2b)
+- `--provider TEXT` - LLM provider: ollama or claude (default: ollama)
+- `--model TEXT` - Model name (default: gemma2:2b for Ollama)
 - `--ollama-url TEXT` - Ollama base URL (default: http://localhost:11434)
 - `--batch-size INT` - Emails per batch (default: 50)
 - `--concurrent-limit INT` - Max concurrent AI requests (default: 25)

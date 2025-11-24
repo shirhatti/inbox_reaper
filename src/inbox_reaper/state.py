@@ -29,6 +29,13 @@ class FilterReason(str, Enum):
     NONE = "none"
 
 
+class LLMProvider(str, Enum):
+    """LLM provider for AI classification."""
+
+    OLLAMA = "ollama"
+    CLAUDE = "claude"
+
+
 class Email(BaseModel):
     """Immutable email data."""
 
@@ -76,6 +83,7 @@ class Config(BaseModel):
     """Configuration for the email classification pipeline."""
 
     # AI settings
+    provider: LLMProvider = LLMProvider.OLLAMA
     concurrent_ai_limit: int = 25
     model_name: str = "gemma2:2b"
     ollama_base_url: str = "http://localhost:11434"

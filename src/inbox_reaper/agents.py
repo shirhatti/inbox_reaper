@@ -9,6 +9,7 @@ import re
 from html.parser import HTMLParser
 
 import ollama
+from anthropic import Anthropic
 
 from .state import (
     Config,
@@ -16,6 +17,7 @@ from .state import (
     Email,
     EmailDecision,
     FilterReason,
+    LLMProvider,
     ProcessingState,
     SenderStats,
 )
@@ -192,10 +194,10 @@ def truncate_symmetric(text: str, max_length: int = 2000) -> str:
     return start + marker + end
 
 
-def classify_with_ai(email: Email, config: Config) -> EmailDecision:
+def classify_with_ollama(email: Email, config: Config) -> EmailDecision:
     """Classify email using Ollama LLM.
 
-    This is the only non-pure function (has side effect of calling Ollama).
+    This is a non-pure function (has side effect of calling Ollama).
     Returns DELETE decision for marketing, KEEP for everything else.
     """
     # Strip HTML and truncate symmetrically to preserve footer (unsubscribe links, etc.)
@@ -240,6 +242,71 @@ Answer:"""
             reason=FilterReason.AI_CLASSIFIED,
             confidence=0.0,
         )
+
+
+def classify_with_claude(email: Email, config: Config) -> EmailDecision:
+    """Classify email using Claude via Anthropic SDK.
+
+    This is a non-pure function (has side effect of calling Anthropic API).
+    Returns DELETE decision for marketing, KEEP for everything else.
+    """
+    # Strip HTML and truncate symmetrically to preserve footer (unsubscribe links, etc.)
+    body_preview = truncate_symmetric(email.body)
+
+    prompt = f"""Classify this email as marketing/promotional or important.
+
+Subject: {email.subject}
+From: {email.sender}
+Body preview: {body_preview}
+
+Is this a marketing/promotional email that can be safely deleted?
+Answer only YES or NO.
+
+Answer:"""
+
+    try:
+        client = Anthropic()
+
+        response = client.messages.create(
+            model=config.model_name,
+            max_tokens=10,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        answer = response.content[0].text.strip().upper()
+
+        if "YES" in answer:
+            decision = Decision.DELETE
+        else:
+            decision = Decision.KEEP
+
+        return EmailDecision(
+            email=email,
+            decision=decision,
+            reason=FilterReason.AI_CLASSIFIED,
+            confidence=0.8,
+        )
+
+    except Exception:
+        # On error, default to KEEP (safe default)
+        return EmailDecision(
+            email=email,
+            decision=Decision.KEEP,
+            reason=FilterReason.AI_CLASSIFIED,
+            confidence=0.0,
+        )
+
+
+def classify_with_ai(email: Email, config: Config) -> EmailDecision:
+    """Classify email using configured AI provider.
+
+    Routes to appropriate provider based on config.provider.
+    Returns DELETE decision for marketing, KEEP for everything else.
+    """
+    if config.provider == LLMProvider.CLAUDE:
+        return classify_with_claude(email, config)
+    else:
+        return classify_with_ollama(email, config)
 
 
 # ============================================================================
