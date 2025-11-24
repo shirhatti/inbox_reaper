@@ -22,6 +22,7 @@ dev = [
 
 [project.scripts]
 inbox-reaper = "inbox_reaper.cli:main"
+setup-dev = "inbox_reaper.scripts:setup_dev"
 
 [tool.ruff]
 target-version = "py313"

@@ -113,39 +113,49 @@ print(f"Deleted: {state.total_deleted}")
 
 ## Development
 
-### Setup
+### Quick Setup (Recommended)
+
+```bash
+# Install dependencies and set up pre-commit hooks automatically
+uv pip install -e ".[dev]"
+uv run setup-dev
+```
+
+This will:
+- Install all development dependencies
+- Set up pre-commit hooks (runs ruff, black, mypy automatically)
+- Verify your environment is ready
+
+### Manual Setup
 
 ```bash
 # Install development dependencies
 uv pip install -e ".[dev]"
 
-# Install pre-commit hooks
+# Install pre-commit hooks manually
 pre-commit install
 ```
 
 ### Code Quality
 
+**Pre-commit hooks run automatically on every commit!** They check:
+- Ruff linting and formatting
+- Black formatting
+- Mypy type checking
+
 ```bash
-# Run all pre-commit hooks
+# Run pre-commit hooks manually on all files
 pre-commit run --all-files
 
-# Lint with ruff
-ruff check src/
-
-# Format with ruff
-ruff format src/
-
-# Format with black
-black src/
-
-# Type checking
-mypy src/
-
-# Run tests
-pytest
+# Individual tool commands (optional)
+ruff check src/          # Lint
+ruff format src/         # Format
+black src/               # Additional formatting
+mypy src/                # Type check
+pytest                   # Run tests
 ```
 
-Pre-commit hooks will automatically run ruff, black, and mypy on staged files before each commit.
+**Important**: If pre-commit hooks pass locally, CI will pass. Always run `setup-dev` to ensure hooks are installed.
 
 ## License
 
