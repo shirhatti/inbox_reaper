@@ -42,16 +42,22 @@ async def create_imap_client(email: str) -> AsyncIMAPClient:
 
     # Check if token is expired and refresh if needed
     try:
-        expires_at = datetime.fromisoformat(creds.get("expires_at", ""))
-        if expires_at < datetime.now():
-            logger.info("Access token expired, refreshing...")
-            tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
-            creds["access_token"] = tokens["access_token"]
-            creds["expires_at"] = (
-                datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
-            ).isoformat()
-            # Note: We don't update stored credentials here to avoid import cycles
-            # The token will be valid for this session
+        expires_at_str = creds.get("expires_at")
+        if expires_at_str and isinstance(expires_at_str, str):
+            expires_at = datetime.fromisoformat(expires_at_str)
+            if expires_at < datetime.now():
+                logger.info("Access token expired, refreshing...")
+                tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
+                creds["access_token"] = tokens["access_token"]
+                creds["expires_at"] = (
+                    datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
+                ).isoformat()
+                # Note: We don't update stored credentials here to avoid import cycles
+                # The token will be valid for this session
+        else:
+            logger.warning(
+                "Token expiration time missing or invalid, using existing token"
+            )
     except Exception as e:
         logger.warning(f"Could not refresh token: {e}, using existing token")
 
