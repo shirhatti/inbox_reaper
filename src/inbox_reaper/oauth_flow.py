@@ -189,10 +189,10 @@ def generate_xoauth2_string(email: str, access_token: str) -> str:
         access_token: OAuth access token
 
     Returns:
-        Base64-encoded XOAUTH2 string
+        Raw XOAUTH2 string (not base64-encoded, as imaplib will encode it)
     """
     auth_string = f"user={email}\x01auth=Bearer {access_token}\x01\x01"
-    return base64.b64encode(auth_string.encode()).decode()
+    return auth_string
 
 
 def verify_imap_connection(
