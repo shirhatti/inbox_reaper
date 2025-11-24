@@ -102,8 +102,7 @@ class AsyncIMAPClient:
             await self.client.wait_hello_from_server()
 
             # Authenticate with XOAUTH2
-            auth_string = generate_xoauth2_string(self.email_address, self.access_token)
-            response = await self.client.authenticate("XOAUTH2", auth_string)
+            response = await self.client.xoauth2(self.email_address, self.access_token)
 
             # Check authentication response
             if response.result != "OK":
