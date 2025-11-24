@@ -306,9 +306,7 @@ def test(email: str):
                 credential_helper.store_credentials(email, creds)
                 click.echo("✓ Token refreshed successfully")
         else:
-            click.echo(
-                "Warning: Token expiration time missing or invalid", err=True
-            )
+            click.echo("Warning: Token expiration time missing or invalid", err=True)
     except Exception as e:
         click.echo(f"Warning: Could not refresh token: {e}", err=True)
 
