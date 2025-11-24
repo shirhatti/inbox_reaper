@@ -44,7 +44,7 @@ def create_agent_function(
     return types.FunctionDeclaration(
         name=name,
         description=f"Execute {name} agent on current state",
-        parameters={
+        parameters={  # type: ignore[arg-type]
             "type": "object",
             "properties": {
                 "state": {
@@ -57,7 +57,7 @@ def create_agent_function(
     )
 
 
-def build_dag(client: genai.Client) -> genai.Agent:
+def build_dag(client: genai.Client) -> genai.Agent:  # type: ignore[name-defined]
     """Build the agent DAG using Google's Agent Development Kit.
 
     The DAG is a linear pipeline for now, but can be extended to support
@@ -75,9 +75,9 @@ def build_dag(client: genai.Client) -> genai.Agent:
     # Create the root agent
     # Note: For initial scaffold, we're using a simple sequential flow
     # In production, this would use the full ADK graph capabilities
-    agent = client.agentic.create_agent(
+    agent = client.agentic.create_agent(  # type: ignore[attr-defined]
         model="gemini-2.0-flash-exp",
-        config=types.AgentConfig(
+        config=types.AgentConfig(  # type: ignore[attr-defined]
             name="email_classifier",
             description="Email classifier with hybrid deterministic + AI pipeline",
             instruction="""You are an email classification agent.
