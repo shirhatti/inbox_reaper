@@ -13,7 +13,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from .batch_coordinator import BatchCoordinator
-from .credential_helper import get_credentials
+from .credential_helper import get_credentials, store_credentials
 from .imap_client import AsyncIMAPClient
 from .oauth_flow import refresh_access_token
 from .state import Config
@@ -52,8 +52,9 @@ async def create_imap_client(email: str) -> AsyncIMAPClient:
                 creds["expires_at"] = (
                     datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
                 ).isoformat()
-                # Note: We don't update stored credentials here to avoid import cycles
-                # The token will be valid for this session
+                # Persist the refreshed credentials
+                store_credentials(email, creds)
+                logger.info("Refreshed credentials persisted to keyring")
         else:
             logger.warning(
                 "Token expiration time missing or invalid, using existing token"

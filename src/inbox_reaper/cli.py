@@ -356,15 +356,20 @@ def fetch_email(email, uid, output):
             )
             return False
 
-        # Refresh token if needed
-        if creds.get("refresh_token"):
-            try:
-                new_creds = refresh_access_token(
-                    creds["refresh_token"], creds["provider"]
-                )
-                creds.update(new_creds)
-            except Exception as e:
-                click.echo(f"Warning: Could not refresh token: {e}", err=True)
+        # Check if token expired and refresh if needed
+        try:
+            expires = datetime.fromisoformat(creds.get("expires_at", ""))
+            if expires < datetime.now():
+                click.echo("Token expired, refreshing...")
+                tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
+                creds["access_token"] = tokens["access_token"]
+                creds["expires_at"] = (
+                    datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
+                ).isoformat()
+                credential_helper.store_credentials(email, creds)
+                click.echo("✓ Token refreshed successfully")
+        except Exception as e:
+            click.echo(f"Warning: Could not refresh token: {e}", err=True)
 
         # Connect to IMAP
         click.echo(f"Connecting to IMAP for {email}...")
