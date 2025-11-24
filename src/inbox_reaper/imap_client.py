@@ -7,6 +7,7 @@ This module provides native async IMAP operations with:
 - Automatic token refresh detection
 """
 
+import asyncio
 import email
 import logging
 from datetime import datetime
@@ -94,15 +95,23 @@ class AsyncIMAPClient:
         """
         try:
             # Create connection
+            logger.info(f"Connecting to {self.host}:993...")
             self.client = aioimaplib.IMAP4_SSL(
                 host=self.host, port=993, timeout=self.timeout
             )
 
-            # Wait for server greeting
-            await self.client.wait_hello_from_server()
+            # Wait for server greeting with timeout
+            logger.info("Waiting for server greeting...")
+            await asyncio.wait_for(
+                self.client.wait_hello_from_server(), timeout=self.timeout
+            )
 
-            # Authenticate with XOAUTH2
-            response = await self.client.xoauth2(self.email_address, self.access_token)
+            # Authenticate with XOAUTH2 with timeout
+            logger.info("Authenticating with OAuth2...")
+            response = await asyncio.wait_for(
+                self.client.xoauth2(self.email_address, self.access_token),
+                timeout=self.timeout,
+            )
 
             # Check authentication response
             if response.result != "OK":
@@ -124,6 +133,10 @@ class AsyncIMAPClient:
         except IMAPAuthError:
             # Re-raise auth errors for token refresh handling
             raise
+        except TimeoutError as e:
+            raise IMAPConnectionError(
+                f"Connection timeout after {self.timeout}s connecting to {self.host}"
+            ) from e
         except Exception as e:
             raise IMAPConnectionError(f"Failed to connect to IMAP server: {e}") from e
 
@@ -406,7 +419,8 @@ class AsyncIMAPClient:
 
         try:
             # Use uid_search to directly get UIDs (native aioimaplib method)
-            response = await self.client.uid_search(criteria)
+            # Pass charset=None to avoid BADCHARSET errors on Exchange/Outlook servers
+            response = await self.client.uid_search(criteria, charset=None)
             if response.result != "OK":
                 raise IMAPConnectionError(f"UID search failed: {response.lines}")
 

@@ -56,9 +56,23 @@ async def create_imap_client(email: str) -> AsyncIMAPClient:
                 store_credentials(email, creds)
                 logger.info("Refreshed credentials persisted to keyring")
         else:
+            # Token expiration info missing, proactively refresh to be safe
             logger.warning(
-                "Token expiration time missing or invalid, using existing token"
+                "Token expiration time missing or invalid, attempting refresh..."
             )
+            if "refresh_token" in creds:
+                tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
+                creds["access_token"] = tokens["access_token"]
+                creds["expires_at"] = (
+                    datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
+                ).isoformat()
+                # Persist the refreshed credentials
+                store_credentials(email, creds)
+                logger.info("Token refreshed and persisted successfully")
+            else:
+                logger.warning(
+                    "No refresh token available, using existing access token"
+                )
     except Exception as e:
         logger.warning(f"Could not refresh token: {e}, using existing token")
 
