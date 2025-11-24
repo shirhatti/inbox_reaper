@@ -52,6 +52,10 @@ class CheckpointManager:
 
     def close(self) -> None:
         """Close the database connection."""
+        # Close the checkpointer's connection
+        if hasattr(self.checkpointer, "conn") and self.checkpointer.conn:
+            self.checkpointer.conn.close()
+        # Close the Peewee database connection
         if not self.db.is_closed():
             self.db.close()
 
