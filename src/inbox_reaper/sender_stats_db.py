@@ -187,13 +187,17 @@ class SenderStatsDB:
                 now = datetime.now()
                 batch_data = []
                 for sender, stat_dict in stats.items():
-                    batch_data.append({
-                        "sender": sender,
-                        "marketing_count": stat_dict.get("marketing_count", 0),
-                        "total_count": stat_dict.get("total_count", 0),
-                        "auto_delete": 1 if stat_dict.get("auto_delete", False) else 0,
-                        "last_updated": now,
-                    })
+                    batch_data.append(
+                        {
+                            "sender": sender,
+                            "marketing_count": stat_dict.get("marketing_count", 0),
+                            "total_count": stat_dict.get("total_count", 0),
+                            "auto_delete": 1
+                            if stat_dict.get("auto_delete", False)
+                            else 0,
+                            "last_updated": now,
+                        }
+                    )
 
                 # Insert or update in batches
                 for batch_item in batch_data:
@@ -284,11 +288,7 @@ class SenderStatsDB:
                 else SenderStatsModel.total_count
             )
 
-            query = (
-                SenderStatsModel.select()
-                .order_by(order_column.desc())
-                .limit(limit)
-            )
+            query = SenderStatsModel.select().order_by(order_column.desc()).limit(limit)
 
             return [
                 {

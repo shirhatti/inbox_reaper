@@ -358,16 +358,18 @@ class QuarantineManager:
 
         results = []
         for record in query:
-            results.append({
-                "uid": record.uid,
-                "email_data": json.loads(record.email_data),
-                "error_type": record.error_type,
-                "error_message": record.error_message,
-                "attempts": record.attempts,
-                "quarantined_at": record.quarantined_at,
-                "last_retry_at": record.last_retry_at,
-                "resolved": record.resolved,
-            })
+            results.append(
+                {
+                    "uid": record.uid,
+                    "email_data": json.loads(record.email_data),
+                    "error_type": record.error_type,
+                    "error_message": record.error_message,
+                    "attempts": record.attempts,
+                    "quarantined_at": record.quarantined_at,
+                    "last_retry_at": record.last_retry_at,
+                    "resolved": record.resolved,
+                }
+            )
 
         return results
 
@@ -411,15 +413,11 @@ class QuarantineManager:
 
         # Total counts
         total_quarantined = (
-            QuarantineModel.select()
-            .where(~QuarantineModel.resolved)
-            .count()
+            QuarantineModel.select().where(~QuarantineModel.resolved).count()
         )
 
         total_resolved = (
-            QuarantineModel.select()
-            .where(QuarantineModel.resolved)
-            .count()
+            QuarantineModel.select().where(QuarantineModel.resolved).count()
         )
 
         # By error type
