@@ -8,15 +8,18 @@ OAUTH_CONFIGS = {
     "gmail": {
         "client_id": "406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com",  # noqa: E501
         "client_secret": "kSmqreRr0qwBWJgbf5Y-PjSU",  # Thunderbird's client secret  # noqa: E501
-        "device_code_uri": "https://oauth2.googleapis.com/device/code",
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": "https://oauth2.googleapis.com/token",
         "scope": "https://mail.google.com/",
+        "redirect_uri": "http://127.0.0.1:9004",  # Thunderbird uses various ports
+        "flow_type": "redirect",  # Use PKCE redirect flow for Gmail
     },
     "outlook": {
         "client_id": "9e5f94bc-e8a4-4e73-b8be-63364c29d753",  # Thunderbird (public client)  # noqa: E501
         "device_code_uri": "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode",
         "token_uri": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
         "scope": "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access",  # noqa: E501
+        "flow_type": "device_code",  # Use device code flow for Outlook
     },
 }
 

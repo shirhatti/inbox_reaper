@@ -55,19 +55,20 @@ class TestGenerateXOAuth2String:
 
 
 class TestPerformOAuthFlow:
-    """Tests for device code OAuth flow."""
+    """Tests for OAuth flow (both device code and redirect flows)."""
 
     @patch("inbox_reaper.oauth_flow.time.sleep")
     @patch("inbox_reaper.oauth_flow.requests.post")
     @patch("inbox_reaper.oauth_flow.get_oauth_config")
     def test_successful_device_flow(self, mock_get_config, mock_post, mock_sleep):
-        """Test successful device code flow."""
+        """Test successful device code flow (Outlook)."""
         # Setup mock config
         mock_get_config.return_value = {
             "client_id": "test_client_id",
             "device_code_uri": "https://oauth.example.com/device/code",
             "token_uri": "https://oauth.example.com/token",
             "scope": "test_scope",
+            "flow_type": "device_code",
         }
 
         # Mock device code response
@@ -124,7 +125,7 @@ class TestPerformOAuthFlow:
     def test_device_flow_with_client_secret(
         self, mock_get_config, mock_post, mock_sleep
     ):
-        """Test device flow includes client_secret when available (Gmail)."""
+        """Test device flow includes client_secret when available."""
         # Setup mock config with client_secret
         mock_get_config.return_value = {
             "client_id": "test_client_id",
@@ -132,6 +133,7 @@ class TestPerformOAuthFlow:
             "device_code_uri": "https://oauth.example.com/device/code",
             "token_uri": "https://oauth.example.com/token",
             "scope": "test_scope",
+            "flow_type": "device_code",
         }
 
         # Mock responses
@@ -150,7 +152,7 @@ class TestPerformOAuthFlow:
         mock_post.side_effect = [device_response, success_response]
 
         # Run the flow
-        perform_oauth_flow("test@gmail.com", "gmail")
+        perform_oauth_flow("test@example.com", "outlook")
 
         # Verify token request includes client_secret
         token_call = mock_post.call_args_list[1]
@@ -170,6 +172,7 @@ class TestPerformOAuthFlow:
             "device_code_uri": "https://oauth.example.com/device/code",
             "token_uri": "https://oauth.example.com/token",
             "scope": "test_scope",
+            "flow_type": "device_code",
         }
 
         # Mock device code response with short expiration
@@ -205,6 +208,7 @@ class TestPerformOAuthFlow:
             "device_code_uri": "https://oauth.example.com/device/code",
             "token_uri": "https://oauth.example.com/token",
             "scope": "test_scope",
+            "flow_type": "device_code",
         }
 
         # Mock responses
@@ -240,6 +244,7 @@ class TestPerformOAuthFlow:
             "device_code_uri": "https://oauth.example.com/device/code",
             "token_uri": "https://oauth.example.com/token",
             "scope": "test_scope",
+            "flow_type": "device_code",
         }
 
         # Mock responses
@@ -426,27 +431,28 @@ class TestVerifyImapConnection:
 class TestRefreshAccessToken:
     """Tests for token refresh functionality."""
 
-    @patch("inbox_reaper.oauth_flow.requests.post")
+    @patch("inbox_reaper.oauth_flow.OAuth2Session")
     @patch("inbox_reaper.oauth_flow.get_oauth_config")
-    def test_successful_token_refresh_with_secret(self, mock_get_config, mock_post):
-        """Test successful token refresh with client secret (Gmail)."""
+    def test_successful_token_refresh_with_secret(self, mock_get_config, mock_session_class):
+        """Test successful token refresh with client secret (Gmail using redirect flow)."""
         # Setup mock config
         mock_get_config.return_value = {
             "client_id": "test_client_id",
             "client_secret": "test_secret",
             "token_uri": "https://oauth.example.com/token",
+            "flow_type": "redirect",
         }
 
-        # Setup mock response
+        # Setup mock OAuth2Session
         expected_tokens = {
             "access_token": "new_access_token",
             "refresh_token": "new_refresh_token",
             "expires_in": 3600,
             "token_type": "Bearer",
         }
-        mock_response = Mock()
-        mock_response.json.return_value = expected_tokens
-        mock_post.return_value = mock_response
+        mock_session = Mock()
+        mock_session.refresh_token.return_value = expected_tokens
+        mock_session_class.return_value = mock_session
 
         # Test token refresh
         result = refresh_access_token("old_refresh_token", "gmail")
@@ -454,26 +460,28 @@ class TestRefreshAccessToken:
         # Verify result
         assert result == expected_tokens
 
-        # Verify POST request
-        mock_post.assert_called_once_with(
-            "https://oauth.example.com/token",
-            data={
-                "grant_type": "refresh_token",
-                "client_id": "test_client_id",
-                "refresh_token": "old_refresh_token",
-                "client_secret": "test_secret",
-            },
+        # Verify OAuth2Session was called with correct parameters
+        mock_session_class.assert_called_once_with(
+            client_id="test_client_id",
+            client_secret="test_secret",
+            token={"refresh_token": "old_refresh_token"},
         )
-        mock_response.raise_for_status.assert_called_once()
+
+        # Verify refresh_token was called
+        mock_session.refresh_token.assert_called_once_with(
+            "https://oauth.example.com/token",
+            refresh_token="old_refresh_token",
+        )
 
     @patch("inbox_reaper.oauth_flow.requests.post")
     @patch("inbox_reaper.oauth_flow.get_oauth_config")
     def test_token_refresh_without_client_secret(self, mock_get_config, mock_post):
-        """Test token refresh for provider without client secret (Outlook)."""
+        """Test token refresh for provider without client secret (Outlook using device code flow)."""
         # Setup mock config without client_secret
         mock_get_config.return_value = {
             "client_id": "test_client_id",
             "token_uri": "https://oauth.example.com/token",
+            "flow_type": "device_code",
         }
 
         # Setup mock response
@@ -501,11 +509,12 @@ class TestRefreshAccessToken:
     @patch("inbox_reaper.oauth_flow.requests.post")
     @patch("inbox_reaper.oauth_flow.get_oauth_config")
     def test_token_refresh_http_error(self, mock_get_config, mock_post):
-        """Test token refresh handles HTTP errors."""
+        """Test token refresh handles HTTP errors (device code flow)."""
         # Setup mock config
         mock_get_config.return_value = {
             "client_id": "test_client_id",
             "token_uri": "https://oauth.example.com/token",
+            "flow_type": "device_code",
         }
 
         # Setup mock to raise HTTP error
