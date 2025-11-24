@@ -338,7 +338,7 @@ class AsyncIMAPClient:
                 if content_type == "text/plain":
                     try:
                         payload = part.get_payload(decode=True)
-                        if payload:
+                        if payload and isinstance(payload, bytes):
                             body = payload.decode("utf-8", errors="replace")
                             break
                     except Exception:
@@ -351,7 +351,7 @@ class AsyncIMAPClient:
                     if content_type == "text/html":
                         try:
                             payload = part.get_payload(decode=True)
-                            if payload:
+                            if payload and isinstance(payload, bytes):
                                 body = payload.decode("utf-8", errors="replace")
                                 break
                         except Exception:
@@ -360,7 +360,7 @@ class AsyncIMAPClient:
             # Not multipart - get payload directly
             try:
                 payload = msg.get_payload(decode=True)
-                if payload:
+                if payload and isinstance(payload, bytes):
                     body = payload.decode("utf-8", errors="replace")
             except Exception:
                 body = str(msg.get_payload())
@@ -388,6 +388,165 @@ class AsyncIMAPClient:
                         attachments.append(self._decode_header(filename))
 
         return attachments
+
+    async def search_uids(self, criteria: str = "ALL") -> list[str]:
+        """Search for email UIDs matching criteria.
+
+        Args:
+            criteria: IMAP search criteria (default: "ALL")
+
+        Returns:
+            List of UIDs as strings
+
+        Raises:
+            IMAPConnectionError: If not connected or search fails
+        """
+        if not self.client:
+            raise IMAPConnectionError("Not connected to IMAP server")
+
+        try:
+            response = await self.client.uid("search", None, criteria)
+            if response.result != "OK":
+                raise IMAPConnectionError(f"UID search failed: {response.lines}")
+
+            # Parse UIDs from response
+            uids_data = response.lines[0]
+            if isinstance(uids_data, bytes):
+                uids_data = uids_data.decode()
+
+            # Ensure it's a string
+            uids_str = str(uids_data) if uids_data else ""
+
+            if not uids_str or uids_str == "":
+                return []
+
+            return uids_str.split()
+
+        except Exception as e:
+            raise IMAPConnectionError(f"Failed to search UIDs: {e}") from e
+
+    async def fetch_headers(
+        self, uids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch email headers for a list of UIDs.
+
+        Args:
+            uids: List of email UIDs to fetch headers for
+
+        Returns:
+            Dictionary mapping UID to header dict with fields:
+            - subject: Email subject
+            - sender: Sender email address
+            - date: Email date as datetime object
+
+        Raises:
+            IMAPConnectionError: If not connected or fetch fails
+        """
+        if not self.client:
+            raise IMAPConnectionError("Not connected to IMAP server")
+
+        if not uids:
+            return {}
+
+        headers = {}
+
+        try:
+            # Fetch headers for each UID
+            for uid in uids:
+                try:
+                    response = await self.client.uid(
+                        "fetch", uid, "(BODY.PEEK[HEADER])"
+                    )
+
+                    if response.result != "OK":
+                        logger.warning(f"Failed to fetch headers for UID {uid}")
+                        continue
+
+                    # Parse header from response
+                    raw_header = None
+                    for line in response.lines:
+                        if isinstance(line, bytes) and b"From:" in line:
+                            raw_header = line
+                            break
+
+                    if not raw_header:
+                        continue
+
+                    # Parse with email library
+                    msg = email.message_from_bytes(raw_header)
+
+                    # Extract fields
+                    subject = self._decode_header(msg.get("Subject", ""))
+                    sender = self._decode_header(msg.get("From", ""))
+                    date_str = msg.get("Date", "")
+
+                    # Parse date
+                    try:
+                        from email.utils import parsedate_to_datetime
+
+                        email_date = parsedate_to_datetime(date_str)
+                    except Exception:
+                        email_date = datetime.now()
+
+                    headers[uid] = {
+                        "subject": subject,
+                        "sender": sender,
+                        "date": email_date,
+                    }
+
+                except Exception as e:
+                    logger.warning(f"Error fetching headers for UID {uid}: {e}")
+                    continue
+
+            return headers
+
+        except Exception as e:
+            raise IMAPConnectionError(f"Failed to fetch headers: {e}") from e
+
+    async def fetch_bodies(
+        self, uids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch email bodies for a list of UIDs.
+
+        Args:
+            uids: List of email UIDs to fetch bodies for
+
+        Returns:
+            Dictionary mapping UID to body dict with fields:
+            - subject, sender, date, body, attachments
+
+        Raises:
+            IMAPConnectionError: If not connected or fetch fails
+        """
+        if not self.client:
+            raise IMAPConnectionError("Not connected to IMAP server")
+
+        if not uids:
+            return {}
+
+        bodies = {}
+
+        try:
+            # Fetch full email for each UID
+            for uid in uids:
+                try:
+                    email_obj = await self._fetch_single_email(uid, mark_seen=False)
+                    if email_obj:
+                        bodies[uid] = {
+                            "subject": email_obj.subject,
+                            "sender": email_obj.sender,
+                            "date": email_obj.date,
+                            "body": email_obj.body,
+                            "attachments": email_obj.attachments,
+                        }
+                except Exception as e:
+                    logger.warning(f"Error fetching body for UID {uid}: {e}")
+                    continue
+
+            return bodies
+
+        except Exception as e:
+            raise IMAPConnectionError(f"Failed to fetch bodies: {e}") from e
 
     async def delete_emails(self, uids: list[str]) -> int:
         """Delete emails by UID.
