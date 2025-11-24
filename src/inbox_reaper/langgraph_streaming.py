@@ -108,33 +108,131 @@ async def process_email_node(state: StreamingState) -> StreamingState:
     """Process a single email.
 
     Runs deterministic filters and optionally AI classification.
+    Fetches email body and applies full classification pipeline.
     """
+    from .agents import (
+        check_attachments,
+        check_keywords,
+        check_whitelist,
+        classify_with_ai,
+    )
+    from .state import Config, Email
+
     uid = state["email_uid"]
     headers = state["email"]
 
     logger.info(f"Processing email {uid}: {headers.get('subject')}")
 
-    # TODO: Implement actual filtering logic here
-    # For now, we'll implement a simple placeholder logic
+    # Reconstruct Config from serialized dict
+    config = Config.model_validate(state["config"])
 
-    subject = headers.get("subject", "").lower()
+    # Fetch email body using a dedicated connection
+    # We can't share the producer's connection, so we create a new one
+    client = IMAPClient(config.email)
 
-    decision = "keep"
-    reason = "default"
+    try:
+        # Connect and fetch the full email body
+        await asyncio.to_thread(client.connect)
+        bodies = await asyncio.to_thread(client.batch_fetch_bodies, [uid])
 
-    # Example deterministic rule
-    if "newsletter" in subject or "unsubscribe" in subject:
-        decision = "delete"
-        reason = "newsletter detected"
+        # Check if we got the body
+        if uid not in bodies:
+            logger.warning(f"Failed to fetch body for email {uid}, keeping by default")
+            return {
+                **state,
+                "operation": "keep",
+                "decision": "keep",
+                "reason": "fetch_failed",
+            }
 
-    # If we needed AI, we would fetch the body here
-    # Since we can't share the producer's connection, we'd need a new connection
-    # or a connection pool. For this refactor, we'll skip body fetching implementation
-    # to focus on the streaming architecture.
+        body_data = bodies[uid]
 
-    logger.info(f"[{decision.upper()}] Email {uid}: {subject[:50]}... -> {reason}")
+        # Create Email object
+        email = Email(
+            uid=uid,
+            subject=body_data["subject"],
+            sender=body_data["sender"],
+            body=body_data["body"],
+            date=body_data["date"],
+            attachments=body_data["attachments"],
+        )
 
-    return {**state, "operation": decision, "decision": decision, "reason": reason}
+        # Apply deterministic filters in order
+        decision_obj = None
+
+        # 1. Check attachments
+        decision_obj = check_attachments(email, config)
+        if decision_obj:
+            logger.info(
+                f"[{decision_obj.decision.value.upper()}] Email {uid}: "
+                f"{email.subject[:50]}... -> {decision_obj.reason.value} "
+                f"(confidence: {decision_obj.confidence})"
+            )
+            return {
+                **state,
+                "operation": decision_obj.decision.value,
+                "decision": decision_obj.decision.value,
+                "reason": decision_obj.reason.value,
+            }
+
+        # 2. Check keywords
+        decision_obj = check_keywords(email, config)
+        if decision_obj:
+            logger.info(
+                f"[{decision_obj.decision.value.upper()}] Email {uid}: "
+                f"{email.subject[:50]}... -> {decision_obj.reason.value} "
+                f"(confidence: {decision_obj.confidence})"
+            )
+            return {
+                **state,
+                "operation": decision_obj.decision.value,
+                "decision": decision_obj.decision.value,
+                "reason": decision_obj.reason.value,
+            }
+
+        # 3. Check whitelist
+        decision_obj = check_whitelist(email, config)
+        if decision_obj:
+            logger.info(
+                f"[{decision_obj.decision.value.upper()}] Email {uid}: "
+                f"{email.subject[:50]}... -> {decision_obj.reason.value} "
+                f"(confidence: {decision_obj.confidence})"
+            )
+            return {
+                **state,
+                "operation": decision_obj.decision.value,
+                "decision": decision_obj.decision.value,
+                "reason": decision_obj.reason.value,
+            }
+
+        # 4. If no deterministic filter matched, use AI classifier
+        # Note: We run this in a thread since classify_with_ai is blocking
+        decision_obj = await asyncio.to_thread(classify_with_ai, email, config)
+
+        logger.info(
+            f"[{decision_obj.decision.value.upper()}] Email {uid}: "
+            f"{email.subject[:50]}... -> {decision_obj.reason.value} "
+            f"(confidence: {decision_obj.confidence})"
+        )
+
+        return {
+            **state,
+            "operation": decision_obj.decision.value,
+            "decision": decision_obj.decision.value,
+            "reason": decision_obj.reason.value,
+        }
+
+    except Exception as e:
+        logger.error(f"Error processing email {uid}: {e}")
+        # Safe default: keep the email on error
+        return {
+            **state,
+            "operation": "keep",
+            "decision": "keep",
+            "reason": f"error: {str(e)}",
+        }
+    finally:
+        await asyncio.to_thread(client.disconnect)
 
 
 def build_streaming_graph() -> CompiledStateGraph:
