@@ -63,8 +63,8 @@ def get_mlx_model(model_name: str) -> tuple[Any, Any]:
     )
 
     try:
-        # Explicitly set return_config=False to get (model, tokenizer) tuple
-        model, tokenizer = load(model_name, return_config=False)
+        # Request config to get predictable 3-value return, discard it
+        model, tokenizer, _ = load(model_name, return_config=True)
         _model_cache[model_name] = (model, tokenizer)
         print(f"✓ Model loaded successfully: {model_name}", file=sys.stderr)
         return model, tokenizer
