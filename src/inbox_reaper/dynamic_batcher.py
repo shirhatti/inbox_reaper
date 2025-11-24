@@ -13,11 +13,11 @@ Features:
 """
 
 import logging
-import os
-import psutil
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+import psutil
 
 from .state import Config, Email, SenderStats
 
@@ -227,7 +227,7 @@ class DynamicBatcher:
                     reason = f"delete_pattern_{delete_rate:.0%}"
                 else:
                     score = 1.0
-                    reason = f"keep_pattern_{1-delete_rate:.0%}"
+                    reason = f"keep_pattern_{1 - delete_rate:.0%}"
             else:
                 score = 1.0
                 reason = "no_history"
@@ -299,7 +299,8 @@ class DynamicBatcher:
 
         logger.info(
             f"Grouped {len(emails)} emails into {len(groups)} groups: "
-            f"avg_size={avg_group_size:.1f}, max_size={max(group_sizes) if group_sizes else 0}"
+            f"avg_size={avg_group_size:.1f}, "
+            f"max_size={max(group_sizes) if group_sizes else 0}"
         )
 
         return groups

@@ -11,10 +11,7 @@ import operator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-import pytest
-
 from inbox_reaper.langgraph_state import (
-    GraphState,
     create_initial_state,
     decision_dict_to_model,
     email_dict_to_model,
@@ -226,9 +223,7 @@ class TestMergeSenderStats:
 
         # Simulate 10 parallel updates
         with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [
-                executor.submit(update_sender, i, i + 1) for i in range(10)
-            ]
+            futures = [executor.submit(update_sender, i, i + 1) for i in range(10)]
             results = [f.result() for f in futures]
 
         # Each result should have the sender it was updating
@@ -528,9 +523,7 @@ class TestConcurrentStateUpdates:
             return operator.or_(base_uids, {uid})
 
         with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = [
-                executor.submit(process_uid, f"uid{i}") for i in range(3, 6)
-            ]
+            futures = [executor.submit(process_uid, f"uid{i}") for i in range(3, 6)]
             results = [f.result() for f in futures]
 
         # Each result should have base UIDs plus the new one

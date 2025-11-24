@@ -43,13 +43,13 @@ class TestDatabaseInitialization:
 
     def test_init_creates_database_file(self, temp_db):
         """Test that initialization creates the database file."""
-        db = SenderStatsDB(temp_db)
+        SenderStatsDB(temp_db)
 
         assert Path(temp_db).exists()
 
     def test_init_creates_tables(self, temp_db):
         """Test that initialization creates required tables."""
-        db = SenderStatsDB(temp_db)
+        SenderStatsDB(temp_db)
 
         conn = sqlite3.connect(temp_db)
         cursor = conn.cursor()
@@ -68,7 +68,7 @@ class TestDatabaseInitialization:
 
     def test_init_creates_indexes(self, temp_db):
         """Test that initialization creates performance indexes."""
-        db = SenderStatsDB(temp_db)
+        SenderStatsDB(temp_db)
 
         conn = sqlite3.connect(temp_db)
         cursor = conn.cursor()
@@ -501,12 +501,21 @@ class TestThreadSafety:
             return db.get_sender_stats(f"sender{sender_id}@example.com")
 
         def write_random_sender(sender_id: int):
-            db.update_sender(f"sender{sender_id}@example.com", sender_id + 10, (sender_id + 10) * 2, True)
+            db.update_sender(
+                f"sender{sender_id}@example.com",
+                sender_id + 10,
+                (sender_id + 10) * 2,
+                True,
+            )
 
         # Mix reads and writes
         with ThreadPoolExecutor(max_workers=10) as executor:
-            read_futures = [executor.submit(read_random_sender, i % 10) for i in range(20)]
-            write_futures = [executor.submit(write_random_sender, i % 10) for i in range(20)]
+            read_futures = [
+                executor.submit(read_random_sender, i % 10) for i in range(20)
+            ]
+            write_futures = [
+                executor.submit(write_random_sender, i % 10) for i in range(20)
+            ]
 
             # Wait for all operations
             [f.result() for f in read_futures + write_futures]

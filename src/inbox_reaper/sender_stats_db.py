@@ -128,12 +128,15 @@ class SenderStatsDB:
             cursor = conn.cursor()
 
             if threshold is not None:
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT sender
                     FROM sender_stats
                     WHERE marketing_count >= ?
                     ORDER BY marketing_count DESC
-                """, (threshold,))
+                """,
+                    (threshold,),
+                )
             else:
                 cursor.execute("""
                     SELECT sender
@@ -161,7 +164,8 @@ class SenderStatsDB:
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO sender_stats
                     (sender, marketing_count, total_count, auto_delete, last_updated)
                 VALUES (?, ?, ?, ?, ?)
@@ -170,13 +174,15 @@ class SenderStatsDB:
                     total_count = excluded.total_count,
                     auto_delete = excluded.auto_delete,
                     last_updated = excluded.last_updated
-            """, (
-                sender,
-                marketing_count,
-                total_count,
-                1 if auto_delete else 0,
-                datetime.now().isoformat(),
-            ))
+            """,
+                (
+                    sender,
+                    marketing_count,
+                    total_count,
+                    1 if auto_delete else 0,
+                    datetime.now().isoformat(),
+                ),
+            )
             conn.commit()
 
     def bulk_update(self, stats: dict[str, dict[str, Any]]) -> None:
@@ -199,16 +205,19 @@ class SenderStatsDB:
             now = datetime.now().isoformat()
             batch_data = []
             for sender, stat_dict in stats.items():
-                batch_data.append((
-                    sender,
-                    stat_dict.get("marketing_count", 0),
-                    stat_dict.get("total_count", 0),
-                    1 if stat_dict.get("auto_delete", False) else 0,
-                    now,
-                ))
+                batch_data.append(
+                    (
+                        sender,
+                        stat_dict.get("marketing_count", 0),
+                        stat_dict.get("total_count", 0),
+                        1 if stat_dict.get("auto_delete", False) else 0,
+                        now,
+                    )
+                )
 
             # Execute batch upsert in a single transaction
-            cursor.executemany("""
+            cursor.executemany(
+                """
                 INSERT INTO sender_stats
                     (sender, marketing_count, total_count, auto_delete, last_updated)
                 VALUES (?, ?, ?, ?, ?)
@@ -217,7 +226,9 @@ class SenderStatsDB:
                     total_count = excluded.total_count,
                     auto_delete = excluded.auto_delete,
                     last_updated = excluded.last_updated
-            """, batch_data)
+            """,
+                batch_data,
+            )
 
             conn.commit()
 
@@ -232,11 +243,14 @@ class SenderStatsDB:
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT sender, marketing_count, total_count, auto_delete
                 FROM sender_stats
                 WHERE sender = ?
-            """, (sender,))
+            """,
+                (sender,),
+            )
 
             row = cursor.fetchone()
             if row:
@@ -287,7 +301,9 @@ class SenderStatsDB:
             row = cursor.fetchone()
             return row["count"] if row else 0
 
-    def get_top_senders(self, limit: int = 10, by: str = "marketing") -> list[dict[str, Any]]:
+    def get_top_senders(
+        self, limit: int = 10, by: str = "marketing"
+    ) -> list[dict[str, Any]]:
         """Get top senders by marketing or total email count.
 
         Args:
@@ -301,12 +317,15 @@ class SenderStatsDB:
 
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 SELECT sender, marketing_count, total_count, auto_delete
                 FROM sender_stats
                 ORDER BY {order_column} DESC
                 LIMIT ?
-            """, (limit,))
+            """,
+                (limit,),
+            )
 
             return [
                 {
@@ -371,7 +390,6 @@ class SenderStatsDB:
             sender_stats: Dictionary mapping sender to SenderStats model
         """
         stats_dicts = {
-            sender: self.stats_to_dict(stats)
-            for sender, stats in sender_stats.items()
+            sender: self.stats_to_dict(stats) for sender, stats in sender_stats.items()
         }
         self.bulk_update(stats_dicts)

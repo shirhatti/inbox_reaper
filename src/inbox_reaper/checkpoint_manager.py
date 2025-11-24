@@ -65,7 +65,8 @@ class CheckpointManager:
             # Initialize with default row if empty
             cursor.execute(
                 """
-                INSERT OR IGNORE INTO watermarks (id, last_processed_uid, last_update_time)
+                INSERT OR IGNORE INTO watermarks
+                (id, last_processed_uid, last_update_time)
                 VALUES (1, NULL, NULL)
                 """
             )
@@ -82,9 +83,7 @@ class CheckpointManager:
         conn = sqlite3.connect(self.checkpoint_path)
         try:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT last_processed_uid FROM watermarks WHERE id = 1"
-            )
+            cursor.execute("SELECT last_processed_uid FROM watermarks WHERE id = 1")
             result = cursor.fetchone()
             return result[0] if result else None
         finally:
@@ -250,7 +249,9 @@ class CheckpointManager:
         if elapsed > 0 and current > 0:
             self._processing_rate = current / elapsed
             remaining = total - current
-            eta_seconds = remaining / self._processing_rate if self._processing_rate > 0 else 0
+            eta_seconds = (
+                remaining / self._processing_rate if self._processing_rate > 0 else 0
+            )
             eta_str = self._format_time(eta_seconds)
         else:
             eta_str = "calculating..."
@@ -331,9 +332,7 @@ class CheckpointManager:
             click.echo("\nDecisions Breakdown:")
             delete_count = sum(1 for d in decisions if d["decision"] == "delete")
             keep_count = sum(1 for d in decisions if d["decision"] == "keep")
-            uncertain_count = sum(
-                1 for d in decisions if d["decision"] == "uncertain"
-            )
+            uncertain_count = sum(1 for d in decisions if d["decision"] == "uncertain")
 
             click.echo(f"  Delete:    {delete_count}")
             click.echo(f"  Keep:      {keep_count}")
@@ -362,7 +361,11 @@ class CheckpointManager:
         if errors:
             click.echo("\nErrors Encountered:")
             for i, error in enumerate(errors[:5], 1):  # Show first 5 errors
-                error_msg = error.get("message", str(error)) if isinstance(error, dict) else str(error)
+                error_msg = (
+                    error.get("message", str(error))
+                    if isinstance(error, dict)
+                    else str(error)
+                )
                 click.echo(f"  {i}. {error_msg}")
             if len(errors) > 5:
                 click.echo(f"  ... and {len(errors) - 5} more")
@@ -414,7 +417,10 @@ class CheckpointManager:
                 return False, "Watermark record missing"
 
             if has_checkpoints:
-                return True, "Checkpoint integrity verified (with LangGraph checkpoints)"
+                return (
+                    True,
+                    "Checkpoint integrity verified (with LangGraph checkpoints)",
+                )
             else:
                 return True, "Checkpoint integrity verified (watermark only)"
 
@@ -478,11 +484,13 @@ class CheckpointManager:
         click.echo("=" * 60)
         click.echo(f"Last processed UID: {resume_info['last_processed_uid']}")
         click.echo(f"Last update: {stats['last_update_time']}")
-        click.echo(f"Progress:")
+        click.echo("Progress:")
         click.echo(f"  - Processed: {stats['total_processed']} emails")
         click.echo(f"  - Deleted:   {stats['total_deleted']} emails")
         click.echo(f"  - Kept:      {stats['total_kept']} emails")
         click.echo(f"  - Errors:    {stats['total_errors']}")
         click.echo("=" * 60)
 
-        return click.confirm("\nDo you want to resume from the last checkpoint?", default=True)
+        return click.confirm(
+            "\nDo you want to resume from the last checkpoint?", default=True
+        )

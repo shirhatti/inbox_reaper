@@ -9,10 +9,16 @@ processing while maintaining thread-safe state updates via reducers.
 """
 
 import asyncio
-from datetime import datetime
 
 import ollama
 
+from .agents import (
+    check_attachments,
+    check_keywords,
+    check_sender_pattern,
+    check_whitelist,
+    truncate_symmetric,
+)
 from .langgraph_state import GraphState, email_dict_to_model, sender_stats_dict_to_model
 from .state import (
     Config,
@@ -22,14 +28,6 @@ from .state import (
     FilterReason,
     SenderStats,
 )
-from .agents import (
-    check_attachments,
-    check_keywords,
-    check_whitelist,
-    check_sender_pattern,
-    truncate_symmetric,
-)
-
 
 # ============================================================================
 # Email Processing Subgraph - Deterministic Filters
@@ -298,7 +296,7 @@ def final_decision_node(state: GraphState) -> GraphState:
     email = email_dict_to_model(current_email_dict)
 
     # Get config
-    config = Config(**state["config"])
+    Config(**state["config"])
 
     # No decision made - mark for AI classification
     # Update sender stats (increment total count only, no marketing count yet)

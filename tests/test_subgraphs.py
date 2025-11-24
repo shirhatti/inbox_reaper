@@ -10,9 +10,7 @@ This module tests:
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from unittest.mock import MagicMock, patch
 
-import pytest
 from langgraph.constants import Send
 
 from inbox_reaper.langgraph_dag import (
@@ -22,7 +20,6 @@ from inbox_reaper.langgraph_dag import (
     fan_out_processing,
 )
 from inbox_reaper.langgraph_state import (
-    GraphState,
     create_initial_state,
     merge_sender_stats,
 )
@@ -361,8 +358,7 @@ class TestRaceConditionPrevention:
         # Run 10 concurrent updates
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = [
-                executor.submit(update_sender_parallel, i, i + 1)
-                for i in range(10)
+                executor.submit(update_sender_parallel, i, i + 1) for i in range(10)
             ]
             results = [f.result() for f in futures]
 

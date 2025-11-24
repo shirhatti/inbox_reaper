@@ -12,11 +12,12 @@ import functools
 import logging
 import sqlite3
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -438,9 +439,7 @@ class QuarantineManager:
         conn = sqlite3.connect(self.quarantine_path)
         try:
             cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE quarantine SET resolved = 1 WHERE uid = ?", (uid,)
-            )
+            cursor.execute("UPDATE quarantine SET resolved = 1 WHERE uid = ?", (uid,))
             conn.commit()
             logger.info(f"Marked quarantined email {uid} as resolved")
         finally:
@@ -718,7 +717,10 @@ class ErrorHandler:
                     )
 
                     # Quarantine if requested and strategy indicates
-                    if quarantine_on_failure and strategy == RecoveryStrategy.QUARANTINE:
+                    if (
+                        quarantine_on_failure
+                        and strategy == RecoveryStrategy.QUARANTINE
+                    ):
                         self.quarantine_manager.add_to_quarantine(
                             uid, email, email_error, category
                         )

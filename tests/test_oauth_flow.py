@@ -1,8 +1,6 @@
 """Tests for OAuth authentication flow."""
 
-import base64
-import time
-from unittest.mock import Mock, call, patch
+from unittest.mock import Mock, patch
 
 from inbox_reaper.oauth_flow import (
     generate_xoauth2_string,

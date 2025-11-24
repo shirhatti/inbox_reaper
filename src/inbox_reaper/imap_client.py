@@ -18,7 +18,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 from .credential_helper import get_credentials
-from .oauth_config import detect_provider, get_oauth_config
+from .oauth_config import detect_provider
 from .oauth_flow import generate_xoauth2_string, refresh_access_token
 
 logger = logging.getLogger(__name__)
@@ -118,13 +118,16 @@ class IMAPClient:
 
             # Update stored credentials
             from .credential_helper import store_credentials
+
             credentials = get_credentials(self.email) or {}
             credentials.update(tokens)
             store_credentials(self.email, credentials)
 
             logger.info("Access token refreshed successfully")
         except Exception as e:
-            raise IMAPAuthenticationError(f"Failed to refresh access token: {e}")
+            raise IMAPAuthenticationError(
+                f"Failed to refresh access token: {e}"
+            ) from e
 
     def connect(self) -> None:
         """Establish connection to IMAP server with OAuth authentication."""
@@ -163,7 +166,9 @@ class IMAPClient:
         except Exception as e:
             self._connected = False
             self._imap = None
-            raise IMAPConnectionError(f"Failed to connect to IMAP server: {e}")
+            raise IMAPConnectionError(
+                f"Failed to connect to IMAP server: {e}"
+            ) from e
 
     def disconnect(self) -> None:
         """Disconnect from IMAP server."""
@@ -222,7 +227,7 @@ class IMAPClient:
                 # Reconnect on connection errors
                 if attempt < self.max_retries - 1:
                     self._connected = False
-                    time.sleep(self.retry_delay * (2 ** attempt))
+                    time.sleep(self.retry_delay * (2**attempt))
                     try:
                         self.connect()
                     except Exception as conn_error:
@@ -378,13 +383,14 @@ class IMAPClient:
                 return {}
 
             # Limit to most recent messages
-            message_ids = message_ids[-limit:] if len(message_ids) > limit else message_ids
+            message_ids = (
+                message_ids[-limit:] if len(message_ids) > limit else message_ids
+            )
 
             # Fetch headers for all messages
             message_set = b",".join(message_ids)
             typ, data = imap.fetch(
-                message_set,
-                "(UID BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)])"
+                message_set, "(UID BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)])"
             )
 
             if typ != "OK":
@@ -496,9 +502,7 @@ class IMAPClient:
 
         return self._retry_operation(_fetch_bodies)
 
-    def batch_delete(
-        self, uids: list[str], dry_run: bool = True
-    ) -> dict[str, bool]:
+    def batch_delete(self, uids: list[str], dry_run: bool = True) -> dict[str, bool]:
         """Mark emails for deletion and optionally expunge.
 
         Args:
@@ -513,7 +517,7 @@ class IMAPClient:
 
         if dry_run:
             logger.info(f"DRY RUN: Would delete {len(uids)} emails")
-            return {uid: True for uid in uids}
+            return dict.fromkeys(uids, True)
 
         imap = self._ensure_connected()
 
@@ -526,17 +530,17 @@ class IMAPClient:
 
             if typ != "OK":
                 logger.error(f"Failed to mark messages as deleted: {data}")
-                return {uid: False for uid in uids}
+                return dict.fromkeys(uids, False)
 
             # Expunge to permanently delete
             typ, data = imap.expunge()
 
             if typ == "OK":
                 logger.info(f"Successfully deleted {len(uids)} emails")
-                results = {uid: True for uid in uids}
+                results = dict.fromkeys(uids, True)
             else:
                 logger.error(f"Failed to expunge messages: {data}")
-                results = {uid: False for uid in uids}
+                results = dict.fromkeys(uids, False)
 
             return results
 

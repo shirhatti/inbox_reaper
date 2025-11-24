@@ -10,14 +10,16 @@ This module provides:
 
 import logging
 import os
-import psutil
 import queue
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
+
+import psutil
 
 from .imap_client import IMAPClient
 from .state import Config
@@ -117,7 +119,9 @@ class IMAPConnectionPool:
         self.max_connection_age = max_connection_age
         self.provider = provider
 
-        self._pool: queue.Queue[tuple[IMAPClient, float]] = queue.Queue(maxsize=pool_size)
+        self._pool: queue.Queue[tuple[IMAPClient, float]] = queue.Queue(
+            maxsize=pool_size
+        )
         self._lock = threading.Lock()
         self._created_count = 0
         self._checkout_count = 0
@@ -192,7 +196,10 @@ class IMAPConnectionPool:
                         client = self._create_connection()
                         created_at = time.time()
                         self._created_count += 1
-                        logger.debug(f"Created new connection ({self._created_count}/{self.pool_size})")
+                        logger.debug(
+                            f"Created new connection "
+                            f"({self._created_count}/{self.pool_size})"
+                        )
                     else:
                         # Pool is full, wait for a connection to be returned
                         logger.debug("Pool exhausted, waiting for available connection")
@@ -393,13 +400,16 @@ class PerformanceOptimizer:
 
             payload = {
                 "model": model_name,
-                "prompt": f"Classify this email as marketing or personal:\n\n{sample_text}\n\nAnswer with one word:",
+                "prompt": (
+                    f"Classify this email as marketing or personal:\n\n"
+                    f"{sample_text}\n\nAnswer with one word:"
+                ),
                 "stream": False,
             }
 
             successes = 0
             total_duration = 0.0
-            start_memory = self._get_memory_usage()
+            self._get_memory_usage()
 
             with self.measure_operation("ollama_throughput") as meta:
                 for i in range(sample_count):
@@ -414,15 +424,23 @@ class PerformanceOptimizer:
                             successes += 1
                         total_duration += time.time() - start
                     except Exception as e:
-                        logger.warning(f"Ollama request {i+1} failed: {e}")
+                        logger.warning(f"Ollama request {i + 1} failed: {e}")
 
                 meta["count"] = successes
                 meta["samples"] = sample_count
-                meta["success_rate"] = successes / sample_count if sample_count > 0 else 0
-                meta["avg_latency"] = total_duration / sample_count if sample_count > 0 else 0
+                meta["success_rate"] = (
+                    successes / sample_count if sample_count > 0 else 0
+                )
+                meta["avg_latency"] = (
+                    total_duration / sample_count if sample_count > 0 else 0
+                )
 
             result = self._benchmarks[-1]
-            logger.info(f"Ollama throughput: {result.throughput:.2f} req/sec" if result.throughput else "N/A")
+            logger.info(
+                f"Ollama throughput: {result.throughput:.2f} req/sec"
+                if result.throughput
+                else "N/A"
+            )
             return result
 
         except ImportError:
@@ -460,7 +478,9 @@ class PerformanceOptimizer:
         Returns:
             BenchmarkResult with latency measurements
         """
-        logger.info(f"Benchmarking IMAP {operation} latency with {sample_count} samples")
+        logger.info(
+            f"Benchmarking IMAP {operation} latency with {sample_count} samples"
+        )
 
         try:
             successes = 0
@@ -490,14 +510,21 @@ class PerformanceOptimizer:
                             total_duration += time.time() - start
 
                         except Exception as e:
-                            logger.warning(f"IMAP request {i+1} failed: {e}")
+                            logger.warning(f"IMAP request {i + 1} failed: {e}")
 
                 meta["samples"] = sample_count
-                meta["success_rate"] = successes / sample_count if sample_count > 0 else 0
-                meta["avg_latency"] = total_duration / sample_count if sample_count > 0 else 0
+                meta["success_rate"] = (
+                    successes / sample_count if sample_count > 0 else 0
+                )
+                meta["avg_latency"] = (
+                    total_duration / sample_count if sample_count > 0 else 0
+                )
 
             result = self._benchmarks[-1]
-            logger.info(f"IMAP {operation} latency: {result.metadata.get('avg_latency', 0):.3f}s avg")
+            logger.info(
+                f"IMAP {operation} latency: "
+                f"{result.metadata.get('avg_latency', 0):.3f}s avg"
+            )
             return result
 
         except Exception as e:
@@ -581,8 +608,13 @@ class PerformanceOptimizer:
         optimal_fetch_size = optimal_batch_size * 2
         optimal_fetch_size = min(optimal_fetch_size, 200)  # Cap at 200
 
-        logger.info(f"System: {cpu_count} CPUs, {available_memory:.0f} MB available memory")
-        logger.info(f"Tuned concurrent_ai_limit: {config.concurrent_ai_limit} -> {optimal_concurrent_limit}")
+        logger.info(
+            f"System: {cpu_count} CPUs, {available_memory:.0f} MB available memory"
+        )
+        logger.info(
+            f"Tuned concurrent_ai_limit: {config.concurrent_ai_limit} -> "
+            f"{optimal_concurrent_limit}"
+        )
         logger.info(f"Tuned batch_size: {config.batch_size} -> {optimal_batch_size}")
         logger.info(f"Tuned fetch_size: {config.fetch_size} -> {optimal_fetch_size}")
 
@@ -632,11 +664,13 @@ class PerformanceOptimizer:
         # Check concurrent_ai_limit
         if config.concurrent_ai_limit < cpu_count:
             recommendations.append(
-                f"Increase concurrent_ai_limit to {cpu_count * 2} to better utilize {cpu_count} CPU cores"
+                f"Increase concurrent_ai_limit to {cpu_count * 2} to better "
+                f"utilize {cpu_count} CPU cores"
             )
         elif config.concurrent_ai_limit > cpu_count * 5:
             recommendations.append(
-                f"Reduce concurrent_ai_limit to {cpu_count * 3} to prevent resource exhaustion"
+                f"Reduce concurrent_ai_limit to {cpu_count * 3} to prevent "
+                "resource exhaustion"
             )
 
         # Check batch_size vs available memory
@@ -644,8 +678,9 @@ class PerformanceOptimizer:
         if estimated_memory_per_batch > available_memory * 0.5:
             recommended_batch_size = int(available_memory * 0.5)
             recommendations.append(
-                f"Reduce batch_size to {recommended_batch_size} to prevent memory issues "
-                f"(current: {config.batch_size}, available memory: {available_memory:.0f} MB)"
+                f"Reduce batch_size to {recommended_batch_size} to prevent "
+                f"memory issues (current: {config.batch_size}, available memory: "
+                f"{available_memory:.0f} MB)"
             )
 
         # Check if fetch_size is optimal
@@ -659,7 +694,8 @@ class PerformanceOptimizer:
         memory = psutil.virtual_memory()
         if memory.percent > 80:
             recommendations.append(
-                f"High memory usage ({memory.percent:.1f}%) - consider reducing batch_size and fetch_size"
+                f"High memory usage ({memory.percent:.1f}%) - consider reducing "
+                "batch_size and fetch_size"
             )
 
         # Analyze benchmarks if available
@@ -672,12 +708,15 @@ class PerformanceOptimizer:
                     )
                 elif benchmark.throughput and benchmark.throughput < 1.0:
                     recommendations.append(
-                        f"Ollama throughput is slow ({benchmark.throughput:.2f} req/sec) - "
+                        f"Ollama throughput is slow "
+                        f"({benchmark.throughput:.2f} req/sec) - "
                         "consider using a smaller model or reducing concurrent_ai_limit"
                     )
 
         if not recommendations:
-            recommendations.append("Configuration looks optimal for current system resources")
+            recommendations.append(
+                "Configuration looks optimal for current system resources"
+            )
 
         return recommendations
 
@@ -728,7 +767,9 @@ class PerformanceMonitor:
         monitor.stop()
     """
 
-    def __init__(self, log_interval: float = 10.0, slow_operation_threshold: float = 5.0):
+    def __init__(
+        self, log_interval: float = 10.0, slow_operation_threshold: float = 5.0
+    ):
         """Initialize performance monitor.
 
         Args:
@@ -800,7 +841,9 @@ class PerformanceMonitor:
 
             # Log slow operations
             if duration > self.slow_operation_threshold:
-                logger.warning(f"Slow operation detected: {operation} took {duration:.2f}s")
+                logger.warning(
+                    f"Slow operation detected: {operation} took {duration:.2f}s"
+                )
 
     def _log_stats(self, final: bool = False):
         """Log current statistics.

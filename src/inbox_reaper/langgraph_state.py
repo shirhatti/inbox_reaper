@@ -5,10 +5,10 @@ email classification pipeline. It uses TypedDict for state shape and Annotated
 reducers for thread-safe synchronization across parallel subgraphs.
 """
 
-from typing import Annotated, TypedDict
 import operator
+from typing import Annotated, TypedDict
 
-from .state import EmailDecision, SenderStats, Config, Email
+from .state import Config, Email, EmailDecision, SenderStats
 
 
 def merge_sender_stats(

@@ -10,8 +10,7 @@ This module tests:
 
 import email
 import imaplib
-from datetime import datetime
-from unittest.mock import MagicMock, Mock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -199,7 +198,7 @@ class TestIMAPConnection:
 
         with patch.object(IMAPClient, "connect") as mock_connect:
             with patch.object(IMAPClient, "disconnect") as mock_disconnect:
-                with IMAPClient(email="user@gmail.com") as client:
+                with IMAPClient(email="user@gmail.com"):
                     pass
 
                 mock_connect.assert_called_once()
@@ -241,11 +240,15 @@ class TestBatchFetchHeaders:
             [
                 (
                     b"1 (UID 123 BODY[HEADER.FIELDS (SUBJECT FROM DATE)] {100}",
-                    b"Subject: Test Email 1\r\nFrom: sender1@example.com\r\nDate: Mon, 24 Nov 2025 10:00:00 +0000\r\n\r\n",
+                    b"Subject: Test Email 1\r\n"
+                    b"From: sender1@example.com\r\n"
+                    b"Date: Mon, 24 Nov 2025 10:00:00 +0000\r\n\r\n",
                 ),
                 (
                     b"2 (UID 456 BODY[HEADER.FIELDS (SUBJECT FROM DATE)] {100}",
-                    b"Subject: Test Email 2\r\nFrom: sender2@example.com\r\nDate: Mon, 24 Nov 2025 11:00:00 +0000\r\n\r\n",
+                    b"Subject: Test Email 2\r\n"
+                    b"From: sender2@example.com\r\n"
+                    b"Date: Mon, 24 Nov 2025 11:00:00 +0000\r\n\r\n",
                 ),
             ],
         )
@@ -290,9 +293,7 @@ class TestBatchFetchBodies:
     """Test batch_fetch_bodies method."""
 
     @patch("inbox_reaper.imap_client.get_credentials")
-    def test_batch_fetch_bodies_with_empty_list(
-        self, mock_get_creds, mock_credentials
-    ):
+    def test_batch_fetch_bodies_with_empty_list(self, mock_get_creds, mock_credentials):
         """Test fetching bodies with empty UID list."""
         mock_get_creds.return_value = mock_credentials
 
@@ -342,9 +343,9 @@ class TestBatchFetchBodies:
         mock_get_creds.return_value = mock_credentials
 
         # Create multipart message with attachment
+        from email.mime.base import MIMEBase
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
-        from email.mime.base import MIMEBase
 
         msg = MIMEMultipart()
         msg["Subject"] = "Email with Attachment"
@@ -356,7 +357,9 @@ class TestBatchFetchBodies:
 
         # Add attachment part
         attachment = MIMEBase("application", "pdf")
-        attachment.add_header("Content-Disposition", "attachment", filename="document.pdf")
+        attachment.add_header(
+            "Content-Disposition", "attachment", filename="document.pdf"
+        )
         msg.attach(attachment)
 
         mock_imap.uid.return_value = (
@@ -402,9 +405,7 @@ class TestBatchDelete:
         assert results == {}
 
     @patch("inbox_reaper.imap_client.get_credentials")
-    def test_batch_delete_success(
-        self, mock_get_creds, mock_credentials, mock_imap
-    ):
+    def test_batch_delete_success(self, mock_get_creds, mock_credentials, mock_imap):
         """Test successful batch deletion."""
         mock_get_creds.return_value = mock_credentials
         mock_imap.uid.return_value = ("OK", [b""])
@@ -425,9 +426,7 @@ class TestBatchDelete:
         mock_imap.expunge.assert_called_once()
 
     @patch("inbox_reaper.imap_client.get_credentials")
-    def test_batch_delete_failure(
-        self, mock_get_creds, mock_credentials, mock_imap
-    ):
+    def test_batch_delete_failure(self, mock_get_creds, mock_credentials, mock_imap):
         """Test batch delete failure."""
         mock_get_creds.return_value = mock_credentials
         mock_imap.uid.return_value = ("NO", [b"Failed"])
@@ -473,17 +472,13 @@ class TestRetryLogic:
         assert mock_sleep.call_count == 2  # Sleep between retries
 
     @patch("inbox_reaper.imap_client.get_credentials")
-    def test_retry_exhaustion_raises_exception(
-        self, mock_get_creds, mock_credentials
-    ):
+    def test_retry_exhaustion_raises_exception(self, mock_get_creds, mock_credentials):
         """Test that exhausted retries raise the last exception."""
         mock_get_creds.return_value = mock_credentials
 
         client = IMAPClient(email="user@gmail.com", max_retries=2)
 
-        mock_operation = MagicMock(
-            side_effect=imaplib.IMAP4.error("Persistent error")
-        )
+        mock_operation = MagicMock(side_effect=imaplib.IMAP4.error("Persistent error"))
 
         with pytest.raises(imaplib.IMAP4.error, match="Persistent error"):
             with patch("inbox_reaper.imap_client.time.sleep"):

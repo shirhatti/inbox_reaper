@@ -9,9 +9,8 @@ This module tests:
 """
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 from langgraph.constants import Send
 from langgraph.graph import StateGraph
 
@@ -27,7 +26,7 @@ from inbox_reaper.langgraph_dag import (
     should_fetch_bodies,
     update_checkpoint,
 )
-from inbox_reaper.langgraph_state import GraphState, create_initial_state
+from inbox_reaper.langgraph_state import create_initial_state
 from inbox_reaper.state import Config
 
 

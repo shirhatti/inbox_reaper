@@ -12,17 +12,19 @@ This module provides:
 import json
 import logging
 import os
-import psutil
 import threading
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
+import psutil
 
 logger = logging.getLogger(__name__)
 
@@ -172,9 +174,7 @@ class StructuredLogger:
             if self.console_output:
                 self._logger.info(json_line)
 
-    def log_subgraph_start(
-        self, correlation_id: str, subgraph_name: str, **context
-    ):
+    def log_subgraph_start(self, correlation_id: str, subgraph_name: str, **context):
         """Log start of subgraph execution.
 
         Args:
@@ -630,7 +630,8 @@ class MetricsCollector:
             # Gauge: Active parallel subgraphs
             lines.extend(
                 [
-                    "# HELP parallel_subgraphs_active Currently active parallel subgraphs",
+                    "# HELP parallel_subgraphs_active "
+                    "Currently active parallel subgraphs",
                     "# TYPE parallel_subgraphs_active gauge",
                     f"parallel_subgraphs_active {self._active_subgraphs}",
                     "",
@@ -661,14 +662,17 @@ class MetricsCollector:
                 all_durations.extend(durations)
 
             if all_durations:
-                histogram = self._create_histogram(all_durations, "processing_duration_seconds")
+                histogram = self._create_histogram(
+                    all_durations, "processing_duration_seconds"
+                )
                 lines.extend(histogram)
             lines.append("")
 
             # Histogram: IMAP operation duration
             lines.extend(
                 [
-                    "# HELP imap_operation_duration_seconds IMAP operation latency histogram",
+                    "# HELP imap_operation_duration_seconds "
+                    "IMAP operation latency histogram",
                     "# TYPE imap_operation_duration_seconds histogram",
                 ]
             )
@@ -686,7 +690,8 @@ class MetricsCollector:
             if self._ai_classification_durations:
                 lines.extend(
                     [
-                        "# HELP ai_classification_duration_seconds AI classification latency histogram",
+                        "# HELP ai_classification_duration_seconds "
+                        "AI classification latency histogram",
                         "# TYPE ai_classification_duration_seconds histogram",
                     ]
                 )
@@ -888,7 +893,9 @@ class ObservabilityContext:
     Example:
         obs = ObservabilityContext(logger, collector)
 
-        with obs.track("email_processing", uid="12345", sender="user@example.com") as ctx:
+        with obs.track(
+            "email_processing", uid="12345", sender="user@example.com"
+        ) as ctx:
             # Process email
             decision = classify_email(email)
             ctx.add_context(decision=decision)
@@ -1102,7 +1109,10 @@ class AlertManager:
         if error_rate > self.error_rate_threshold:
             alert = Alert(
                 level=AlertLevel.ERROR,
-                message=f"Error rate ({error_rate:.1%}) exceeds threshold ({self.error_rate_threshold:.1%})",
+                message=(
+                    f"Error rate ({error_rate:.1%}) exceeds threshold "
+                    f"({self.error_rate_threshold:.1%})"
+                ),
                 timestamp=datetime.now(),
                 metric_name="error_rate",
                 current_value=error_rate,
@@ -1123,7 +1133,10 @@ class AlertManager:
         if current_rate < self.min_processing_rate:
             alert = Alert(
                 level=AlertLevel.WARNING,
-                message=f"Processing rate ({current_rate:.2f} emails/sec) is below minimum ({self.min_processing_rate:.2f} emails/sec)",
+                message=(
+                    f"Processing rate ({current_rate:.2f} emails/sec) "
+                    f"is below minimum ({self.min_processing_rate:.2f} emails/sec)"
+                ),
                 timestamp=datetime.now(),
                 metric_name="processing_rate",
                 current_value=current_rate,
@@ -1148,7 +1161,10 @@ class AlertManager:
         if memory_mb > self.memory_limit_mb:
             alert = Alert(
                 level=AlertLevel.CRITICAL,
-                message=f"Memory usage ({memory_mb:.0f} MB) exceeds limit ({self.memory_limit_mb:.0f} MB)",
+                message=(
+                    f"Memory usage ({memory_mb:.0f} MB) exceeds limit "
+                    f"({self.memory_limit_mb:.0f} MB)"
+                ),
                 timestamp=datetime.now(),
                 metric_name="memory_usage_mb",
                 current_value=memory_mb,
@@ -1175,7 +1191,10 @@ class AlertManager:
         if uncertain_rate > self.uncertain_rate_threshold:
             alert = Alert(
                 level=AlertLevel.WARNING,
-                message=f"Uncertain decision rate ({uncertain_rate:.1%}) exceeds threshold ({self.uncertain_rate_threshold:.1%})",
+                message=(
+                    f"Uncertain decision rate ({uncertain_rate:.1%}) exceeds "
+                    f"threshold ({self.uncertain_rate_threshold:.1%})"
+                ),
                 timestamp=datetime.now(),
                 metric_name="uncertain_rate",
                 current_value=uncertain_rate,

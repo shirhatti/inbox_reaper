@@ -13,7 +13,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -45,13 +45,13 @@ class TestCheckpointInitialization:
 
     def test_init_creates_database_file(self, temp_checkpoint_db):
         """Test that initialization creates the database file."""
-        manager = CheckpointManager(temp_checkpoint_db)
+        CheckpointManager(temp_checkpoint_db)
 
         assert Path(temp_checkpoint_db).exists()
 
     def test_init_creates_watermark_table(self, temp_checkpoint_db):
         """Test that initialization creates watermark table."""
-        manager = CheckpointManager(temp_checkpoint_db)
+        CheckpointManager(temp_checkpoint_db)
 
         conn = sqlite3.connect(temp_checkpoint_db)
         cursor = conn.cursor()
@@ -69,7 +69,7 @@ class TestCheckpointInitialization:
 
     def test_init_creates_default_watermark_row(self, temp_checkpoint_db):
         """Test that initialization creates default watermark row."""
-        manager = CheckpointManager(temp_checkpoint_db)
+        CheckpointManager(temp_checkpoint_db)
 
         conn = sqlite3.connect(temp_checkpoint_db)
         cursor = conn.cursor()
@@ -83,7 +83,7 @@ class TestCheckpointInitialization:
     @patch("inbox_reaper.checkpoint_manager.SqliteSaver")
     def test_init_creates_checkpointer(self, mock_saver, temp_checkpoint_db):
         """Test that initialization creates SqliteSaver checkpointer."""
-        manager = CheckpointManager(temp_checkpoint_db)
+        CheckpointManager(temp_checkpoint_db)
 
         mock_saver.from_conn_string.assert_called_once()
 
@@ -113,7 +113,9 @@ class TestWatermarkOperations:
         last_uid = checkpoint_manager.get_last_processed_uid()
         assert last_uid == "11111"
 
-    def test_update_watermark_sets_timestamp(self, checkpoint_manager, temp_checkpoint_db):
+    def test_update_watermark_sets_timestamp(
+        self, checkpoint_manager, temp_checkpoint_db
+    ):
         """Test that updating watermark sets last_update_time."""
         checkpoint_manager.update_watermark("12345")
 
@@ -208,7 +210,7 @@ class TestCheckpointIntegrity:
 
     def test_verify_checkpoint_integrity_nonexistent_file(self):
         """Test verifying integrity when database doesn't exist."""
-        manager = CheckpointManager("nonexistent.db")
+        CheckpointManager("nonexistent.db")
 
         is_valid, message = checkpoint_manager.verify_checkpoint_integrity()
 
@@ -296,7 +298,9 @@ class TestProgressDisplay:
         assert "keep: 4" in output
 
     @patch("inbox_reaper.checkpoint_manager.click.echo")
-    def test_display_progress_calculates_percentage(self, mock_echo, checkpoint_manager):
+    def test_display_progress_calculates_percentage(
+        self, mock_echo, checkpoint_manager
+    ):
         """Test that progress display calculates percentage."""
         checkpoint_manager.display_progress(
             current=50,
@@ -443,7 +447,9 @@ class TestSummaryDisplay:
         assert "Error 3" in output
 
     @patch("inbox_reaper.checkpoint_manager.click.echo")
-    def test_display_summary_with_decisions_breakdown(self, mock_echo, checkpoint_manager):
+    def test_display_summary_with_decisions_breakdown(
+        self, mock_echo, checkpoint_manager
+    ):
         """Test summary shows decisions breakdown."""
         config = Config()
         state = create_initial_state(config)

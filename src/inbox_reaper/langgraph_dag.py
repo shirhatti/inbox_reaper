@@ -10,13 +10,13 @@ Graph Structure:
 """
 
 from typing import Literal
-from langgraph.graph import StateGraph, START, END
+
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.constants import Send
+from langgraph.graph import END, START, StateGraph
 
 from .langgraph_state import GraphState, create_initial_state
 from .state import Config
-
 
 # ===== Main Graph Nodes =====
 
@@ -198,7 +198,8 @@ def fan_out_ai_classification(state: GraphState) -> list[Send]:
     email_bodies = state["email_bodies"]
 
     print(
-        f"[fan_out_ai_classification] Spawning {len(email_bodies)} AI classification tasks..."
+        f"[fan_out_ai_classification] Spawning {len(email_bodies)} "
+        "AI classification tasks..."
     )
 
     # Spawn parallel AI classification subgraph for each email
@@ -356,7 +357,9 @@ def ai_classification_subgraph(state: GraphState) -> GraphState:
 # ===== Build LangGraph =====
 
 
-def build_langgraph(config: Config, checkpoint_path: str = "checkpoints.db") -> StateGraph:
+def build_langgraph(
+    config: Config, checkpoint_path: str = "checkpoints.db"
+) -> StateGraph:
     """Build the main LangGraph for email classification pipeline.
 
     Args:

@@ -4,7 +4,6 @@ Provides a Click-based command-line interface for the email classification syste
 """
 
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import click
 
@@ -13,7 +12,7 @@ from .checkpoint_manager import CheckpointManager
 from .langgraph_dag import run_langgraph_pipeline
 from .oauth_config import detect_provider
 from .oauth_flow import perform_oauth_flow, refresh_access_token, verify_imap_connection
-from .state import Config, Email
+from .state import Config
 
 
 @click.group()
@@ -137,7 +136,9 @@ def process(
         click.echo(f"\nError initializing checkpoint: {e}", err=True)
         click.echo("Tip: Use --checkpoint-path to specify a different location")
         if click.confirm("Continue without checkpointing?", default=False):
-            click.echo("Warning: Processing without checkpoints - cannot resume if interrupted")
+            click.echo(
+                "Warning: Processing without checkpoints - cannot resume if interrupted"
+            )
             checkpoint_manager = None
         else:
             click.echo("Aborted.")
@@ -151,7 +152,9 @@ def process(
 
         if not is_valid:
             click.echo(f"\nCheckpoint integrity check failed: {integrity_msg}")
-            if click.confirm("Clear corrupted checkpoint and start fresh?", default=True):
+            if click.confirm(
+                "Clear corrupted checkpoint and start fresh?", default=True
+            ):
                 checkpoint_manager.clear_checkpoint()
                 click.echo("Checkpoint cleared. Starting fresh.")
             else:
@@ -188,18 +191,22 @@ def process(
             click.echo(f"\nTotal processed: {final_state['total_processed']}")
             click.echo(f"Total deleted:   {final_state['total_deleted']}")
             click.echo(f"Total kept:      {final_state['total_kept']}")
-            if final_state['errors']:
+            if final_state["errors"]:
                 click.echo(f"Errors:          {len(final_state['errors'])}")
 
     except KeyboardInterrupt:
         click.echo("\n\nProcessing interrupted by user.")
         if checkpoint_manager:
-            click.echo("Progress has been saved. Use --resume to continue from checkpoint.")
+            click.echo(
+                "Progress has been saved. Use --resume to continue from checkpoint."
+            )
         raise
     except Exception as e:
         click.echo(f"\nError during processing: {e}", err=True)
         if checkpoint_manager:
-            click.echo("Progress has been saved. Use --resume to continue from checkpoint.")
+            click.echo(
+                "Progress has been saved. Use --resume to continue from checkpoint."
+            )
         raise
 
 
