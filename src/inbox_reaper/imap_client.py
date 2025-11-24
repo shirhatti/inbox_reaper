@@ -125,9 +125,7 @@ class IMAPClient:
 
             logger.info("Access token refreshed successfully")
         except Exception as e:
-            raise IMAPAuthenticationError(
-                f"Failed to refresh access token: {e}"
-            ) from e
+            raise IMAPAuthenticationError(f"Failed to refresh access token: {e}") from e
 
     def connect(self) -> None:
         """Establish connection to IMAP server with OAuth authentication."""
@@ -166,9 +164,7 @@ class IMAPClient:
         except Exception as e:
             self._connected = False
             self._imap = None
-            raise IMAPConnectionError(
-                f"Failed to connect to IMAP server: {e}"
-            ) from e
+            raise IMAPConnectionError(f"Failed to connect to IMAP server: {e}") from e
 
     def disconnect(self) -> None:
         """Disconnect from IMAP server."""

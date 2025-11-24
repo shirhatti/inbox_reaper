@@ -11,7 +11,7 @@ This module tests:
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from langgraph.constants import Send
+from langgraph.types import Send
 
 from inbox_reaper.langgraph_dag import (
     ai_classification_subgraph,

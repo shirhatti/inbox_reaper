@@ -12,8 +12,8 @@ Graph Structure:
 from typing import Literal
 
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.constants import Send
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
 
 from .langgraph_state import GraphState, create_initial_state
 from .state import Config
