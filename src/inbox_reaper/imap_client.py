@@ -15,10 +15,23 @@ from typing import Any
 
 import aioimaplib
 
-from .oauth_flow import generate_xoauth2_string
 from .state import Email
 
 logger = logging.getLogger(__name__)
+
+
+def generate_xoauth2_string(email: str, access_token: str) -> str:
+    """Generate XOAUTH2 authentication string for IMAP/SMTP.
+
+    Args:
+        email: User's email address
+        access_token: OAuth access token
+
+    Returns:
+        Raw XOAUTH2 string (not base64-encoded, as aioimaplib will encode it)
+    """
+    auth_string = f"user={email}\x01auth=Bearer {access_token}\x01\x01"
+    return auth_string
 
 
 class IMAPAuthError(Exception):
@@ -425,9 +438,7 @@ class AsyncIMAPClient:
         except Exception as e:
             raise IMAPConnectionError(f"Failed to search UIDs: {e}") from e
 
-    async def fetch_headers(
-        self, uids: list[str]
-    ) -> dict[str, dict[str, Any]]:
+    async def fetch_headers(self, uids: list[str]) -> dict[str, dict[str, Any]]:
         """Fetch email headers for a list of UIDs.
 
         Args:
@@ -503,9 +514,7 @@ class AsyncIMAPClient:
         except Exception as e:
             raise IMAPConnectionError(f"Failed to fetch headers: {e}") from e
 
-    async def fetch_bodies(
-        self, uids: list[str]
-    ) -> dict[str, dict[str, Any]]:
+    async def fetch_bodies(self, uids: list[str]) -> dict[str, dict[str, Any]]:
         """Fetch email bodies for a list of UIDs.
 
         Args:

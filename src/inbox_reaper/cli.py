@@ -385,11 +385,11 @@ def fetch_email(email, uid, output):
                 email_data = bodies[uid]
 
                 # Convert to .eml format (simple text representation)
-                eml_content = f"""From: {email_data['sender']}
-Subject: {email_data['subject']}
-Date: {email_data['date']}
+                eml_content = f"""From: {email_data["sender"]}
+Subject: {email_data["subject"]}
+Date: {email_data["date"]}
 
-{email_data['body']}
+{email_data["body"]}
 """
 
                 # Determine output path

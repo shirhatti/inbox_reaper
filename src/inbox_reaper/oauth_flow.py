@@ -15,7 +15,12 @@ import requests
 from authlib.common.security import generate_token
 from authlib.integrations.requests_client import OAuth2Session
 
-from .imap_client import AsyncIMAPClient, IMAPAuthError, IMAPConnectionError
+from .imap_client import (
+    AsyncIMAPClient,
+    IMAPAuthError,
+    IMAPConnectionError,
+    generate_xoauth2_string,
+)
 from .oauth_config import get_oauth_config
 
 
@@ -315,20 +320,6 @@ def refresh_access_token(refresh_token: str, provider: str) -> dict:
         response.raise_for_status()
 
         return response.json()  # type: ignore[no-any-return]
-
-
-def generate_xoauth2_string(email: str, access_token: str) -> str:
-    """Generate XOAUTH2 authentication string for IMAP/SMTP.
-
-    Args:
-        email: User's email address
-        access_token: OAuth access token
-
-    Returns:
-        Raw XOAUTH2 string (not base64-encoded, as imaplib will encode it)
-    """
-    auth_string = f"user={email}\x01auth=Bearer {access_token}\x01\x01"
-    return auth_string
 
 
 async def verify_imap_connection(

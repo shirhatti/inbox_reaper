@@ -37,8 +37,7 @@ async def create_imap_client(email: str) -> AsyncIMAPClient:
     creds = get_credentials(email)
     if not creds:
         raise ValueError(
-            f"No credentials found for {email}. "
-            "Please run 'inbox-reaper login' first."
+            f"No credentials found for {email}. Please run 'inbox-reaper login' first."
         )
 
     # Check if token is expired and refresh if needed
