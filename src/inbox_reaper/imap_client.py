@@ -604,8 +604,31 @@ class AsyncIMAPClient:
                     f"Failed to expunge deleted emails: {response.lines}"
                 )
 
+            # Parse EXPUNGE responses to track which messages were expunged
+            expunged_seq_nums = []
+            for line in response.lines:
+                line_str = line.decode() if isinstance(line, bytes) else str(line)
+                if "EXPUNGE" in line_str:
+                    # Parse sequence number from "* XXXX EXPUNGE" format
+                    parts = line_str.split()
+                    if len(parts) >= 2 and parts[-1] == "EXPUNGE":
+                        try:
+                            seq_num = int(parts[-2])
+                            expunged_seq_nums.append(seq_num)
+                        except (ValueError, IndexError):
+                            logger.warning(
+                                f"Failed to parse EXPUNGE response: {line_str}"
+                            )
+
             deleted_count = len(uids)
-            logger.info(f"Deleted {deleted_count} emails")
+            if expunged_seq_nums:
+                logger.info(
+                    f"Deleted {deleted_count} emails (expunged sequence numbers: "
+                    f"{min(expunged_seq_nums)}-{max(expunged_seq_nums)}, "
+                    f"total: {len(expunged_seq_nums)})"
+                )
+            else:
+                logger.info(f"Deleted {deleted_count} emails")
 
         except Exception as e:
             raise IMAPConnectionError(f"Failed to delete emails: {e}") from e
