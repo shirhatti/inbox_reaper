@@ -145,13 +145,40 @@ class IMAPClient:
                 self._imap.authenticate("XOAUTH2", lambda x: auth_string)  # type: ignore[arg-type,return-value]
             except imaplib.IMAP4.error as e:
                 # Try refreshing token if authentication fails
-                if "AUTHENTICATIONFAILED" in str(e).upper():
-                    logger.info("Authentication failed, attempting token refresh...")
-                    self._refresh_access_token()
-                    auth_string = generate_xoauth2_string(
-                        self.email, self._access_token or ""
+                # IMAP servers return different error messages for auth failures:
+                # - "AUTHENTICATE failed." (Outlook)
+                # - "AUTHENTICATIONFAILED" (Gmail)
+                # - "NO [AUTHENTICATIONFAILED]" (RFC 5530 response code)
+                error_msg = str(e).upper()
+
+                # Check for various authentication failure patterns
+                is_auth_failure = any(
+                    [
+                        "AUTHENTICATION" in error_msg and "FAIL" in error_msg,
+                        "AUTHENTICATE" in error_msg and "FAIL" in error_msg,
+                        "[AUTHENTICATIONFAILED]" in error_msg,
+                        "INVALID CREDENTIALS" in error_msg,
+                        "LOGIN FAILED" in error_msg,
+                    ]
+                )
+
+                if is_auth_failure:
+                    logger.info(
+                        f"Authentication failed ({e}), attempting token refresh..."
                     )
-                    self._imap.authenticate("XOAUTH2", lambda x: auth_string)  # type: ignore[arg-type,return-value]
+                    try:
+                        self._refresh_access_token()
+                        auth_string = generate_xoauth2_string(
+                            self.email, self._access_token or ""
+                        )
+                        self._imap.authenticate("XOAUTH2", lambda x: auth_string)  # type: ignore[arg-type,return-value]
+                        logger.info("Successfully authenticated after token refresh")
+                    except Exception as refresh_error:
+                        logger.error(f"Token refresh failed: {refresh_error}")
+                        raise IMAPAuthenticationError(
+                            f"Authentication failed and token refresh "
+                            f"unsuccessful: {refresh_error}"
+                        ) from refresh_error
                 else:
                     raise
 
@@ -327,7 +354,7 @@ class IMAPClient:
                         payload = part.get_payload(decode=True)
                         if payload:
                             charset = part.get_content_charset() or "utf-8"
-                            body = payload.decode(charset, errors="replace")
+                            body = payload.decode(charset, errors="replace")  # type: ignore[union-attr]
                             break
                     except Exception as e:
                         logger.warning(f"Failed to decode text/plain part: {e}")
@@ -336,7 +363,7 @@ class IMAPClient:
                         payload = part.get_payload(decode=True)
                         if payload:
                             charset = part.get_content_charset() or "utf-8"
-                            body = payload.decode(charset, errors="replace")
+                            body = payload.decode(charset, errors="replace")  # type: ignore[union-attr]
                     except Exception as e:
                         logger.warning(f"Failed to decode text/html part: {e}")
         else:
@@ -345,7 +372,7 @@ class IMAPClient:
                 payload = msg.get_payload(decode=True)
                 if payload:
                     charset = msg.get_content_charset() or "utf-8"
-                    body = payload.decode(charset, errors="replace")
+                    body = payload.decode(charset, errors="replace")  # type: ignore[union-attr]
             except Exception as e:
                 logger.warning(f"Failed to decode message body: {e}")
 
@@ -427,7 +454,261 @@ class IMAPClient:
             logger.info(f"Fetched {len(headers)} email headers")
             return headers
 
-        return self._retry_operation(_fetch_headers)
+        return self._retry_operation(_fetch_headers)  # type: ignore[no-any-return]
+
+    def get_latest_uid(self) -> int | None:
+        """Get the UID of the latest message in the mailbox.
+
+        Returns:
+            Latest UID as integer, or None if mailbox is empty
+        """
+        imap = self._ensure_connected()
+
+        def _get_latest():
+            # Get message count from SELECT
+            # imap.select() returns ('OK', [b'75211'])
+            typ, data = imap.select("INBOX", readonly=True)
+            if typ != "OK" or not data:
+                logger.error(f"SELECT failed: {typ}, {data}")
+                return None
+
+            logger.info(f"SELECT returned: {data}")
+            try:
+                total_messages = int(data[0])
+            except (ValueError, IndexError):
+                logger.error(f"Failed to parse total messages from: {data}")
+                return None
+
+            if total_messages == 0:
+                logger.info("Mailbox is empty")
+                return None
+
+            # Fetch UID of the last message using its sequence number
+            typ, data = imap.fetch(str(total_messages), "(UID)")
+            if typ != "OK" or not data:
+                logger.error(f"FETCH failed: {typ}, {data}")
+                return None
+
+            logger.info(f"FETCH last UID returned: {data}")
+            # Parse response like: b'123 (UID 456)'
+            # data[0] can be a tuple (if body included) or bytes (if just header/uid)
+            item = data[0]
+            header_str = None
+
+            if isinstance(item, tuple):
+                header_data = item[0]
+                if isinstance(header_data, bytes):
+                    header_str = header_data.decode("utf-8", errors="replace")
+            elif isinstance(item, bytes):
+                header_str = item.decode("utf-8", errors="replace")
+
+            if header_str and "UID" in header_str:
+                try:
+                    # header_str is like "75211 (UID 215748)"
+                    uid_part = header_str.split("UID")[1].split()[0]
+                    return int(uid_part.strip(")"))
+                except (IndexError, ValueError):
+                    logger.error(f"Failed to parse UID from: {header_str}")
+                    pass
+
+            logger.error(f"Could not find UID in data: {data}")
+            return None
+
+        return self._retry_operation(_get_latest)  # type: ignore[no-any-return]
+
+    def search_uids(self, criteria: str = "ALL") -> list[str]:
+        """Search for messages and return UIDs.
+
+        Args:
+            criteria: IMAP search criteria
+
+        Returns:
+            List of UIDs
+        """
+        imap = self._ensure_connected()
+
+        def _search():
+            typ, data = imap.uid("SEARCH", None, criteria)
+            if typ != "OK":
+                raise IMAPConnectionError("Failed to search messages")
+
+            if not data or not data[0]:
+                logger.info(f"Search {criteria} returned no results")
+                return []
+
+            uids = data[0].split()
+            logger.info(f"Search {criteria} returned {len(uids)} UIDs")
+            return uids
+
+        return self._retry_operation(_search)  # type: ignore[no-any-return]
+
+    def fetch_full_email(self, uid: str) -> bytes | None:
+        """Fetch the complete email message by UID.
+
+        Args:
+            uid: UID of the email to fetch
+
+        Returns:
+            Complete email message as bytes, or None if not found
+        """
+        imap = self._ensure_connected()
+
+        def _fetch():
+            typ, data = imap.uid("FETCH", uid, "(RFC822)")
+            if typ != "OK" or not data:
+                return None
+
+            # data is a list of tuples: [(b'UID FLAGS', b'email content'), b')']
+            for item in data:
+                if isinstance(item, tuple) and len(item) >= 2:
+                    return item[1]
+
+            return None
+
+        return self._retry_operation(_fetch)  # type: ignore[no-any-return]
+
+    def fetch_headers(self, uids: list[str]) -> dict[str, dict]:
+        """Fetch headers for specific UIDs.
+
+        Args:
+            uids: List of UIDs to fetch
+
+        Returns:
+            Dictionary mapping UID to header dict
+        """
+        if not uids:
+            return {}
+
+        imap = self._ensure_connected()
+
+        def _fetch():
+            # Join UIDs with comma
+            uid_set = ",".join(uids).encode("utf-8")
+
+            # Fetch headers and UID
+            # BODY.PEEK[HEADER.FIELDS (...)] ensures we don't mark as read
+            typ, data = imap.uid(
+                "FETCH", uid_set, "(UID BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)])"
+            )
+            if typ != "OK":
+                raise IMAPConnectionError(f"Failed to fetch headers for UIDs {uids}")
+
+            headers = {}
+
+            for item in data:
+                if isinstance(item, tuple):
+                    # Parse UID from response
+                    header_data = item[0]
+                    current_uid = None
+
+                    if isinstance(header_data, bytes):
+                        header_str = header_data.decode("utf-8", errors="replace")
+                        # Extract UID from response like "123 (UID 456 BODY..."
+                        if "UID" in header_str:
+                            uid_part = header_str.split("UID")[1].split()[0]
+                            current_uid = uid_part.strip(")")
+
+                    # Parse email headers
+                    msg_data = item[1]
+                    if isinstance(msg_data, bytes) and current_uid:
+                        msg = email.message_from_bytes(msg_data)
+
+                        subject = self._decode_header(msg.get("Subject"))
+                        sender = self._decode_header(msg.get("From"))
+                        date_str = msg.get("Date")
+                        date = self._parse_email_date(date_str)
+
+                        headers[current_uid] = {
+                            "uid": current_uid,
+                            "subject": subject,
+                            "sender": sender,
+                            "date": date,
+                            "attachments": [],
+                        }
+
+            return headers
+
+        return self._retry_operation(_fetch)  # type: ignore[no-any-return]
+
+    def fetch_headers_batch(
+        self, start_uid: int = 1, limit: int = 100
+    ) -> dict[str, dict]:
+        """Fetch a batch of email headers starting from a specific UID.
+
+        Args:
+            start_uid: Minimum UID to fetch (inclusive)
+            limit: Maximum number of emails to fetch
+
+        Returns:
+            Dictionary mapping UID to header dict
+        """
+        imap = self._ensure_connected()
+
+        def _fetch_batch():
+            # Search for messages with UID >= start_uid
+            # UID range syntax: "start_uid:*"
+            typ, data = imap.uid("SEARCH", None, f"{start_uid}:*")
+            if typ != "OK":
+                raise IMAPConnectionError("Failed to search messages")
+
+            message_ids = data[0].split()
+            if not message_ids:
+                return {}
+
+            # Sort UIDs numerically
+            message_ids = sorted(message_ids, key=lambda x: int(x))
+
+            # Take the first 'limit' UIDs
+            batch_uids = message_ids[:limit]
+
+            if not batch_uids:
+                return {}
+
+            # Fetch headers for the batch
+            uid_set = b",".join(batch_uids)
+            typ, data = imap.uid(
+                "FETCH", uid_set, "(UID BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)])"
+            )
+
+            if typ != "OK":
+                raise IMAPConnectionError("Failed to fetch headers")
+
+            headers = {}
+
+            for item in data:
+                if isinstance(item, tuple):
+                    # Parse UID from response
+                    header_data = item[0]
+                    current_uid = None
+
+                    if isinstance(header_data, bytes):
+                        header_str = header_data.decode("utf-8", errors="replace")
+                        # Extract UID from response like "123 (UID 456 BODY..."
+                        if "UID" in header_str:
+                            uid_part = header_str.split("UID")[1].split()[0]
+                            current_uid = uid_part.strip(")")
+
+                    # Parse email headers
+                    msg_data = item[1]
+                    if isinstance(msg_data, bytes) and current_uid:
+                        msg = email.message_from_bytes(msg_data)
+
+                        subject = self._decode_header(msg.get("Subject"))
+                        sender = self._decode_header(msg.get("From"))
+                        date_str = msg.get("Date")
+                        date = self._parse_email_date(date_str)
+
+                        headers[current_uid] = {
+                            "uid": current_uid,
+                            "subject": subject,
+                            "sender": sender,
+                            "date": date,
+                            "attachments": [],
+                        }
+
+            return headers
+
+        return self._retry_operation(_fetch_batch)  # type: ignore[no-any-return]
 
     def batch_fetch_bodies(self, uids: list[str]) -> dict[str, dict]:
         """Fetch full email bodies for specific UIDs.
@@ -496,7 +777,7 @@ class IMAPClient:
             logger.info(f"Fetched {len(emails)} complete email bodies")
             return emails
 
-        return self._retry_operation(_fetch_bodies)
+        return self._retry_operation(_fetch_bodies)  # type: ignore[no-any-return]
 
     def batch_delete(self, uids: list[str], dry_run: bool = True) -> dict[str, bool]:
         """Mark emails for deletion and optionally expunge.
@@ -540,7 +821,7 @@ class IMAPClient:
 
             return results
 
-        return self._retry_operation(_delete_messages)
+        return self._retry_operation(_delete_messages)  # type: ignore[no-any-return]
 
     def __enter__(self) -> "IMAPClient":
         """Context manager entry."""

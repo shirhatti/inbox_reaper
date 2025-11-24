@@ -3,16 +3,27 @@
 Provides a Click-based command-line interface for the email classification system.
 """
 
+import logging
 from datetime import datetime, timedelta
 
 import click
 
 from . import credential_helper
-from .checkpoint_manager import CheckpointManager
-from .langgraph_dag import run_langgraph_pipeline
 from .oauth_config import detect_provider
-from .oauth_flow import perform_oauth_flow, refresh_access_token, verify_imap_connection
+from .oauth_flow import (
+    perform_oauth_flow,
+    refresh_access_token,
+    verify_imap_connection,
+)
 from .state import Config
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 
 @click.group()
@@ -74,6 +85,16 @@ def cli():
     show_default=True,
 )
 @click.option(
+    "--email",
+    required=True,
+    help="Email address to process",
+)
+@click.option(
+    "--max-emails",
+    type=int,
+    help="Maximum number of emails to process (for testing)",
+)
+@click.option(
     "--keywords",
     multiple=True,
     help="Critical keywords to trigger KEEP decision (can be specified multiple times)",
@@ -91,6 +112,8 @@ def process(
     dry_run: bool,
     checkpoint_path: str,
     resume: bool,
+    email: str,
+    max_emails: int | None,
     keywords: tuple,
     whitelist_domain: tuple,
 ):
@@ -100,20 +123,21 @@ def process(
     orchestration, with support for checkpointing and resumable processing.
 
     Example:
-        inbox-reaper process --keywords "important" --whitelist-domain "gmail.com"
-        inbox-reaper process --checkpoint-path my_checkpoint.db --resume
-        inbox-reaper process --dry-run --no-resume
+        inbox-reaper process --email user@example.com --keywords "important"
+        inbox-reaper process --email user@example.com --max-emails 10
     """
     click.echo("Inbox Reaper - Email Classification System (LangGraph)")
     click.echo("=" * 60)
 
     # Create configuration
     config = Config(
+        email=email,
         model_name=model,
         ollama_base_url=ollama_url,
         batch_size=batch_size,
         concurrent_ai_limit=concurrent_limit,
         dry_run=dry_run,
+        max_emails=max_emails,
         keywords=list(keywords),
         whitelist_domains=list(whitelist_domain),
     )
@@ -128,85 +152,26 @@ def process(
     click.echo(f"  Keywords: {config.keywords or 'None'}")
     click.echo(f"  Whitelisted domains: {config.whitelist_domains or 'None'}")
 
-    # Initialize checkpoint manager
-    try:
-        checkpoint_manager = CheckpointManager(checkpoint_path)
-        click.echo(f"\nCheckpoint database initialized: {checkpoint_path}")
-    except Exception as e:
-        click.echo(f"\nError initializing checkpoint: {e}", err=True)
-        click.echo("Tip: Use --checkpoint-path to specify a different location")
-        if click.confirm("Continue without checkpointing?", default=False):
-            click.echo(
-                "Warning: Processing without checkpoints - cannot resume if interrupted"
-            )
-            checkpoint_manager = None
-        else:
-            click.echo("Aborted.")
-            return
-
-    # Check for resumable session
-    should_resume = False
-    if checkpoint_manager and resume:
-        # Verify checkpoint integrity
-        is_valid, integrity_msg = checkpoint_manager.verify_checkpoint_integrity()
-
-        if not is_valid:
-            click.echo(f"\nCheckpoint integrity check failed: {integrity_msg}")
-            if click.confirm(
-                "Clear corrupted checkpoint and start fresh?", default=True
-            ):
-                checkpoint_manager.clear_checkpoint()
-                click.echo("Checkpoint cleared. Starting fresh.")
-            else:
-                click.echo("Aborted.")
-                return
-        else:
-            # Check if there's a resumable session
-            resume_info = checkpoint_manager.get_resume_info()
-            if resume_info["can_resume"]:
-                should_resume = checkpoint_manager.display_resume_prompt()
-                if not should_resume:
-                    # User chose not to resume, clear checkpoint
-                    checkpoint_manager.clear_checkpoint()
-                    click.echo("Starting fresh processing session.")
-
     # Run the LangGraph pipeline
     try:
-        click.echo("\nStarting LangGraph pipeline execution...")
+        click.echo("\nStarting LangGraph pipeline execution (Streaming Mode)...")
         click.echo("-" * 60)
 
-        final_state = run_langgraph_pipeline(config, checkpoint_path)
+        import asyncio
+
+        from .langgraph_streaming import run_streaming_pipeline
+
+        asyncio.run(run_streaming_pipeline(config))
 
         click.echo("\n" + "=" * 60)
         click.echo("Processing Complete!")
         click.echo("=" * 60)
 
-        # Display final summary using CheckpointManager
-        if checkpoint_manager:
-            checkpoint_manager.display_summary(final_state)
-            # Clear checkpoint on successful completion
-            checkpoint_manager.clear_checkpoint()
-        else:
-            # Fallback display if no checkpoint manager
-            click.echo(f"\nTotal processed: {final_state['total_processed']}")
-            click.echo(f"Total deleted:   {final_state['total_deleted']}")
-            click.echo(f"Total kept:      {final_state['total_kept']}")
-            if final_state["errors"]:
-                click.echo(f"Errors:          {len(final_state['errors'])}")
-
     except KeyboardInterrupt:
         click.echo("\n\nProcessing interrupted by user.")
-        if checkpoint_manager:
-            click.echo(
-                "Progress has been saved. Use --resume to continue from checkpoint."
-            )
         raise
     except Exception as e:
         click.echo(f"\nError during processing: {e}", err=True)
-        if checkpoint_manager:
-            click.echo(
-                "Progress has been saved. Use --resume to continue from checkpoint."
-            )
         raise
 
 
@@ -350,6 +315,79 @@ def test(email: str):
         click.echo(f"✓ {message}")
     else:
         click.echo(f"✗ {message}", err=True)
+
+
+@cli.command()
+@click.option(
+    "--email",
+    required=True,
+    help="Email address to fetch from",
+)
+@click.option(
+    "--uid",
+    required=True,
+    help="UID of the email to fetch",
+)
+@click.option(
+    "--output",
+    type=click.Path(),
+    help="Output .eml file path (default: email_<uid>.eml)",
+)
+def fetch_email(email, uid, output):
+    """Fetch a specific email by UID and save it as an .eml file.
+
+    This is a debug command to inspect specific emails.
+    """
+    from .imap_client import IMAPClient
+
+    # Get credentials
+    creds = credential_helper.get_credentials(email)
+    if not creds:
+        click.echo(
+            f"No credentials found for {email}. Please run 'inbox-reaper login' first.",
+            err=True,
+        )
+        return
+
+    # Refresh token if needed
+    if creds.get("refresh_token"):
+        try:
+            new_creds = refresh_access_token(creds["refresh_token"], creds["provider"])
+            creds.update(new_creds)
+            # Note: credential_helper doesn't have save_credentials,
+            # tokens are managed internally
+        except Exception as e:
+            click.echo(f"Warning: Could not refresh token: {e}", err=True)
+
+    # Connect to IMAP
+    click.echo(f"Connecting to IMAP for {email}...")
+    client = IMAPClient(email=email, provider=creds["provider"])
+
+    try:
+        client.connect()
+        click.echo(f"Fetching email UID {uid}...")
+
+        email_data = client.fetch_full_email(uid)
+
+        if not email_data:
+            click.echo(f"Email with UID {uid} not found.", err=True)
+            return
+
+        # Determine output path
+        if not output:
+            output = f"email_{uid}.eml"
+
+        # Save to file
+        with open(output, "wb") as f:
+            f.write(email_data)
+
+        click.echo(f"✓ Email saved to {output}")
+        click.echo(f"  Size: {len(email_data)} bytes")
+
+    except Exception as e:
+        click.echo(f"Error fetching email: {e}", err=True)
+    finally:
+        client.disconnect()
 
 
 def main():

@@ -80,9 +80,13 @@ class Config(BaseModel):
     model_name: str = "gemma2:2b"
     ollama_base_url: str = "http://localhost:11434"
 
+    # Email settings
+    email: str = ""
+
     # IMAP settings
     fetch_size: int = 100
     batch_size: int = 50
+    max_emails: int | None = None
 
     # Decision thresholds
     auto_delete_threshold: int = 5

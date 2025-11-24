@@ -11,8 +11,8 @@ This module tests:
 from datetime import datetime
 from unittest.mock import patch
 
-from langgraph.types import Send
 from langgraph.graph import StateGraph
+from langgraph.types import Send
 
 from inbox_reaper.langgraph_dag import (
     aggregate_ai_results,
