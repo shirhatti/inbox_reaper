@@ -1,7 +1,15 @@
 [project]
 name = "inbox-reaper"
 version = "0.1.0"
-description = "Add your description here"
+description = "Email classification and cleaning system using hybrid deterministic + AI pipeline"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "click>=8.1.0",
+    "google-genai>=0.3.0",
+    "ollama>=0.1.0",
+    "pydantic>=2.0.0",
+]
+
+[project.scripts]
+inbox-reaper = "inbox_reaper.cli:main"
