@@ -11,7 +11,7 @@ from google import genai
 from . import credential_helper
 from .dag import run_pipeline, run_pipeline_with_adk
 from .oauth_config import detect_provider
-from .oauth_flow import perform_oauth_flow, refresh_access_token, test_imap_connection
+from .oauth_flow import perform_oauth_flow, refresh_access_token, verify_imap_connection
 from .state import Config, Email, ProcessingState
 
 
@@ -349,7 +349,7 @@ def test(email: str):
 
     # Test connection
     click.echo(f"\nTesting IMAP connection for {email}...")
-    success, message = test_imap_connection(
+    success, message = verify_imap_connection(
         email, creds["access_token"], creds["provider"]
     )
 
