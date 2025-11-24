@@ -3,8 +3,8 @@
 import asyncio
 from unittest.mock import AsyncMock, Mock, call, patch
 
+from inbox_reaper.imap_client import generate_xoauth2_string
 from inbox_reaper.oauth_flow import (
-    generate_xoauth2_string,
     perform_oauth_flow,
     refresh_access_token,
     verify_imap_connection,

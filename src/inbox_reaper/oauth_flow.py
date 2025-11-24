@@ -15,12 +15,7 @@ import requests
 from authlib.common.security import generate_token
 from authlib.integrations.requests_client import OAuth2Session
 
-from .imap_client import (
-    AsyncIMAPClient,
-    IMAPAuthError,
-    IMAPConnectionError,
-    generate_xoauth2_string,
-)
+from .imap_client import AsyncIMAPClient, IMAPAuthError, IMAPConnectionError
 from .oauth_config import get_oauth_config
 
 
