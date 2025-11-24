@@ -103,7 +103,7 @@ def perform_oauth_flow(email: str, provider: str) -> dict:
         # Success! We have tokens
         if "access_token" in token_json:
             print("\n\n✓ Authentication successful!")
-            return token_json
+            return token_json  # type: ignore[no-any-return]
 
         # Unexpected response
         raise RuntimeError(f"Unexpected response: {token_json}")
@@ -139,7 +139,7 @@ def refresh_access_token(refresh_token: str, provider: str) -> dict:
     response = requests.post(config["token_uri"], data=token_data)
     response.raise_for_status()
 
-    return response.json()
+    return response.json()  # type: ignore[no-any-return]
 
 
 def generate_xoauth2_string(email: str, access_token: str) -> str:
