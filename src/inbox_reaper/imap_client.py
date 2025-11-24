@@ -196,20 +196,8 @@ class AsyncIMAPClient:
             raise IMAPConnectionError("Not connected to IMAP server")
 
         try:
-            # Search for all UIDs (we'll filter by max_uid afterwards)
-            response = await self.client.uid("search", None, "ALL")
-            if response.result != "OK":
-                raise IMAPConnectionError(f"UID search failed: {response.lines}")
-
-            # Parse UIDs from response
-            uids_data = response.lines[0]
-            if isinstance(uids_data, bytes):
-                uids_data = uids_data.decode()
-
-            if not uids_data or uids_data == "":
-                return []
-
-            all_uids = uids_data.split()
+            # Search for all UIDs using search_uids method
+            all_uids = await self.search_uids("ALL")
 
             # Filter by max_uid if specified
             if max_uid:
@@ -417,22 +405,49 @@ class AsyncIMAPClient:
             raise IMAPConnectionError("Not connected to IMAP server")
 
         try:
-            response = await self.client.uid("search", None, criteria)
+            # Step 1: Search to get message sequence numbers
+            response = await self.client.search(criteria, charset=None)
             if response.result != "OK":
-                raise IMAPConnectionError(f"UID search failed: {response.lines}")
+                raise IMAPConnectionError(f"Search failed: {response.lines}")
 
-            # Parse UIDs from response
-            uids_data = response.lines[0]
-            if isinstance(uids_data, bytes):
-                uids_data = uids_data.decode()
+            # Parse sequence numbers from response
+            seq_data = response.lines[0]
+            if isinstance(seq_data, bytes):
+                seq_data = seq_data.decode()
 
-            # Ensure it's a string
-            uids_str = str(uids_data) if uids_data else ""
-
-            if not uids_str or uids_str == "":
+            seq_str = str(seq_data) if seq_data else ""
+            if not seq_str or seq_str == "":
                 return []
 
-            return uids_str.split()
+            seq_nums = seq_str.split()
+            if not seq_nums:
+                return []
+
+            # Step 2: Fetch UIDs for these sequence numbers
+            seq_set = ",".join(seq_nums)
+            response = await self.client.fetch(seq_set, "(UID)")
+
+            if response.result != "OK":
+                raise IMAPConnectionError(f"Failed to fetch UIDs: {response.lines}")
+
+            # Parse UIDs from fetch response
+            # Response format: b'1 FETCH (UID 123)', b'2 FETCH (UID 124)', etc.
+            uids = []
+            for line in response.lines:
+                if not line:
+                    continue
+                line_str = line.decode() if isinstance(line, bytes) else str(line)
+                # Look for UID in the response
+                if "UID" in line_str:
+                    # Parse "1 FETCH (UID 123)" -> extract "123"
+                    parts = line_str.split()
+                    for i, part in enumerate(parts):
+                        if part == "UID" and i + 1 < len(parts):
+                            uid = parts[i + 1].rstrip(")")
+                            uids.append(uid)
+                            break
+
+            return uids
 
         except Exception as e:
             raise IMAPConnectionError(f"Failed to search UIDs: {e}") from e
