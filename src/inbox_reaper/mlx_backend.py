@@ -104,7 +104,8 @@ def generate_text(model_name: str, prompt: str, max_tokens: int = 100) -> str:
         verbose=False,  # Suppress token-by-token output
     )
 
-    return response
+    # Explicit cast since mlx_lm doesn't have type stubs
+    return str(response)
 
 
 async def generate_text_async(
