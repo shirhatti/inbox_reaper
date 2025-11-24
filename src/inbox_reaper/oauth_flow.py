@@ -9,8 +9,11 @@ This module handles the OAuth 2.0 authentication flow with PKCE, including:
 
 import base64
 import imaplib
+import ssl
+import tempfile
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from authlib.common.security import generate_token
@@ -76,6 +79,44 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
         pass
 
 
+def create_self_signed_cert() -> tuple[str, str]:
+    """Create a self-signed SSL certificate for localhost.
+
+    Returns:
+        Tuple of (cert_file_path, key_file_path)
+    """
+    import subprocess
+
+    # Create temporary directory for cert files
+    temp_dir = tempfile.mkdtemp()
+    cert_file = Path(temp_dir) / "cert.pem"
+    key_file = Path(temp_dir) / "key.pem"
+
+    # Generate self-signed certificate using openssl
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:4096",
+            "-keyout",
+            str(key_file),
+            "-out",
+            str(cert_file),
+            "-days",
+            "1",
+            "-nodes",
+            "-subj",
+            "/CN=localhost",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    return str(cert_file), str(key_file)
+
+
 def perform_oauth_flow(email: str, provider: str) -> dict:
     """Perform OAuth 2.0 authentication flow with PKCE.
 
@@ -123,9 +164,21 @@ def perform_oauth_flow(email: str, provider: str) -> dict:
     # Open browser
     webbrowser.open(auth_url)
 
+    # Parse redirect URI to determine protocol and port
+    redirect_uri = config["redirect_uri"]
+    parsed_uri = urlparse(redirect_uri)
+    use_https = parsed_uri.scheme == "https"
+    port = parsed_uri.port or (443 if use_https else 80)
+
     # Start local server to receive callback
-    port = int(config["redirect_uri"].split(":")[-1].rstrip("/"))
     server = HTTPServer(("localhost", port), OAuthCallbackHandler)
+
+    # Wrap with SSL if HTTPS is required
+    if use_https:
+        cert_file, key_file = create_self_signed_cert()
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_context.load_cert_chain(cert_file, key_file)
+        server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
 
     print(f"Waiting for authentication callback on port {port}...")
 

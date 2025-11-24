@@ -18,7 +18,7 @@ OAUTH_CONFIGS = {
         "auth_uri": "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
         "token_uri": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
         "scope": "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access",  # noqa: E501
-        "redirect_uri": "http://localhost:9004",  # Thunderbird uses localhost
+        "redirect_uri": "https://localhost:8080",  # Thunderbird uses https://localhost
     },
 }
 
