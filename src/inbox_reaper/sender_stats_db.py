@@ -38,7 +38,7 @@ class SenderStatsDB:
         )
 
         # Bind model to database
-        SenderStatsModel._meta.database = self.db  # type: ignore[attr-defined]
+        SenderStatsModel._meta.database = self.db
 
         self._init_db()
 
@@ -208,13 +208,13 @@ class SenderStatsDB:
         with self._lock:
             try:
                 sender_model = SenderStatsModel.get(SenderStatsModel.sender == sender)
-                return {  # type: ignore[return-value]
+                return {
                     "sender": sender_model.sender,
                     "marketing_count": sender_model.marketing_count,
                     "total_count": sender_model.total_count,
                     "auto_delete": bool(sender_model.auto_delete),
                 }
-            except SenderStatsModel.DoesNotExist:  # type: ignore[attr-defined]
+            except SenderStatsModel.DoesNotExist:
                 return None
 
     def delete_sender(self, sender: str) -> bool:

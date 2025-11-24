@@ -259,7 +259,7 @@ class QuarantineManager:
 
         # Initialize database
         self.db = SqliteDatabase(str(self.quarantine_path))
-        QuarantineModel._meta.database = self.db  # type: ignore[attr-defined]
+        QuarantineModel._meta.database = self.db
 
         self._init_database()
 
@@ -309,7 +309,7 @@ class QuarantineManager:
             logger.warning(
                 f"Updated quarantine for UID {uid} (attempt {attempts}): {error}"
             )
-        except QuarantineModel.DoesNotExist:  # type: ignore[attr-defined]
+        except QuarantineModel.DoesNotExist:
             # Insert new quarantine record
             QuarantineModel.create(
                 uid=uid,

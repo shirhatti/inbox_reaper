@@ -40,7 +40,7 @@ class CheckpointManager:
 
         # Initialize database for watermark table
         self.db = SqliteDatabase(str(self.checkpoint_path))
-        WatermarkModel._meta.database = self.db  # type: ignore[attr-defined]
+        WatermarkModel._meta.database = self.db
 
         # Progress tracking
         self._start_time: float | None = None
@@ -76,7 +76,7 @@ class CheckpointManager:
         try:
             watermark = WatermarkModel.get(WatermarkModel.id == 1)
             return watermark.last_processed_uid  # type: ignore[no-any-return]
-        except WatermarkModel.DoesNotExist:  # type: ignore[attr-defined]
+        except WatermarkModel.DoesNotExist:
             return None
 
     def update_watermark(self, uid: str) -> None:
@@ -149,7 +149,7 @@ class CheckpointManager:
                 "total_kept": watermark.total_kept or 0,
                 "total_errors": watermark.total_errors or 0,
             }
-        except WatermarkModel.DoesNotExist:  # type: ignore[attr-defined]
+        except WatermarkModel.DoesNotExist:
             return {
                 "last_processed_uid": None,
                 "last_update_time": None,
@@ -344,7 +344,7 @@ class CheckpointManager:
             # Get watermark stats
             try:
                 WatermarkModel.get(WatermarkModel.id == 1)
-            except WatermarkModel.DoesNotExist:  # type: ignore[attr-defined]
+            except WatermarkModel.DoesNotExist:
                 return False, "Watermark record missing"
 
             if has_checkpoints:
