@@ -87,14 +87,45 @@ def check_sender_pattern(
     return None
 
 
+def truncate_symmetric(text: str, max_length: int = 1000) -> str:
+    """Truncate text symmetrically, keeping start and end.
+
+    Preserves the beginning and end of the text (which often contains
+    important footer information like unsubscribe links), removing the
+    middle portion if the text exceeds max_length.
+
+    Args:
+        text: The text to truncate
+        max_length: Maximum length of the result
+
+    Returns:
+        Truncated text with start and end preserved
+    """
+    if len(text) <= max_length:
+        return text
+
+    # Reserve 20 chars for the truncation marker
+    marker = "\n\n[... content truncated ...]\n\n"
+    available = max_length - len(marker)
+
+    # Split available space evenly between start and end
+    start_length = available // 2
+    end_length = available - start_length
+
+    start = text[:start_length]
+    end = text[-end_length:]
+
+    return start + marker + end
+
+
 def classify_with_ai(email: Email, config: Config) -> EmailDecision:
     """Classify email using Ollama LLM.
 
     This is the only non-pure function (has side effect of calling Ollama).
     Returns DELETE decision for marketing, KEEP for everything else.
     """
-    # Truncate body to first 1000 chars for efficiency
-    body_preview = email.body[:1000]
+    # Truncate body symmetrically to preserve footer info (e.g., unsubscribe links)
+    body_preview = truncate_symmetric(email.body, max_length=1000)
 
     prompt = f"""Classify this email as marketing/promotional or important.
 
