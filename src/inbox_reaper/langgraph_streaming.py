@@ -100,33 +100,27 @@ async def imap_producer(config: Config) -> AsyncIterator[dict]:
             await client.select_mailbox("INBOX")
 
             # 1. Search for all UIDs
-            logger.info("Searching for all UIDs...")
+            logger.info("Searching for UIDs...")
             all_uids_str = await client.search_uids(criteria="ALL")
 
             if not all_uids_str:
                 logger.info("No emails found.")
                 return
 
-            # Convert to int and find max
-            all_uids = [int(uid) for uid in all_uids_str]
-            max_uid = max(all_uids)
-            logger.info(f"Found {len(all_uids)} emails, max UID is {max_uid}")
+            logger.info(f"Found {len(all_uids_str)} emails")
 
-            # Sort descending for newest-first processing
-            all_uids.sort(reverse=True)
-
-            # Apply max_emails limit if set
+            # Process in chronological order (UIDs are already ascending)
+            # Apply max_emails limit if set (take oldest N emails)
             if config.max_emails:
-                all_uids = all_uids[: config.max_emails]
-                logger.info(f"Limiting to {len(all_uids)} newest emails")
+                all_uids_str = all_uids_str[: config.max_emails]
+                logger.info(f"Limiting to {len(all_uids_str)} oldest emails")
 
             # 2. Fetch headers in batches
             fetch_batch_size = config.fetch_size
             total_yielded = 0
 
-            for i in range(0, len(all_uids), fetch_batch_size):
-                batch = all_uids[i : i + fetch_batch_size]
-                batch_str = [str(uid) for uid in batch]
+            for i in range(0, len(all_uids_str), fetch_batch_size):
+                batch = all_uids_str[i : i + fetch_batch_size]
 
                 logger.info(
                     f"Fetching headers for {len(batch)} emails "
@@ -134,15 +128,14 @@ async def imap_producer(config: Config) -> AsyncIterator[dict]:
                 )
 
                 # Native async header fetch - no thread wrapper needed!
-                headers = await client.fetch_headers(uids=batch_str)
+                headers = await client.fetch_headers(uids=batch)
 
                 # Yield each email
-                for uid_int in batch:
-                    uid_str = str(uid_int)
-                    if uid_str in headers:
+                for uid in batch:
+                    if uid in headers:
                         yield {
-                            "email_uid": uid_str,
-                            "email": headers[uid_str],
+                            "email_uid": uid,
+                            "email": headers[uid],
                             "operation": "process",
                             "decision": None,
                             "reason": None,

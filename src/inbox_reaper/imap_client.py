@@ -405,49 +405,21 @@ class AsyncIMAPClient:
             raise IMAPConnectionError("Not connected to IMAP server")
 
         try:
-            # Step 1: Search to get message sequence numbers
-            response = await self.client.search(criteria, charset=None)
+            # Use uid_search to directly get UIDs (native aioimaplib method)
+            response = await self.client.uid_search(criteria)
             if response.result != "OK":
-                raise IMAPConnectionError(f"Search failed: {response.lines}")
+                raise IMAPConnectionError(f"UID search failed: {response.lines}")
 
-            # Parse sequence numbers from response
-            seq_data = response.lines[0]
-            if isinstance(seq_data, bytes):
-                seq_data = seq_data.decode()
+            # Parse UIDs from response
+            uids_data = response.lines[0]
+            if isinstance(uids_data, bytes):
+                uids_data = uids_data.decode()
 
-            seq_str = str(seq_data) if seq_data else ""
-            if not seq_str or seq_str == "":
+            uids_str = str(uids_data) if uids_data else ""
+            if not uids_str or uids_str == "":
                 return []
 
-            seq_nums = seq_str.split()
-            if not seq_nums:
-                return []
-
-            # Step 2: Fetch UIDs for these sequence numbers
-            seq_set = ",".join(seq_nums)
-            response = await self.client.fetch(seq_set, "(UID)")
-
-            if response.result != "OK":
-                raise IMAPConnectionError(f"Failed to fetch UIDs: {response.lines}")
-
-            # Parse UIDs from fetch response
-            # Response format: b'1 FETCH (UID 123)', b'2 FETCH (UID 124)', etc.
-            uids = []
-            for line in response.lines:
-                if not line:
-                    continue
-                line_str = line.decode() if isinstance(line, bytes) else str(line)
-                # Look for UID in the response
-                if "UID" in line_str:
-                    # Parse "1 FETCH (UID 123)" -> extract "123"
-                    parts = line_str.split()
-                    for i, part in enumerate(parts):
-                        if part == "UID" and i + 1 < len(parts):
-                            uid = parts[i + 1].rstrip(")")
-                            uids.append(uid)
-                            break
-
-            return uids
+            return uids_str.split()
 
         except Exception as e:
             raise IMAPConnectionError(f"Failed to search UIDs: {e}") from e

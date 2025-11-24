@@ -148,10 +148,11 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
         # Verify search_uids called with ALL
         mock_client.search_uids.assert_called_with(criteria="ALL")
 
-        # Verify fetch_headers called with 3 newest UIDs: 100, 98, 96
+        # Verify fetch_headers called with 3 oldest UIDs: 2, 4, 6
+        # (Processing in chronological order now)
         mock_client.fetch_headers.assert_called_once()
         call_args = mock_client.fetch_headers.call_args[1]
-        self.assertEqual(call_args["uids"], ["100", "98", "96"])
+        self.assertEqual(call_args["uids"], ["2", "4", "6"])
 
 
 if __name__ == "__main__":
