@@ -103,8 +103,11 @@ inbox-reaper process
 # Using Ollama with custom model
 inbox-reaper process --provider ollama --model llama3.2:3b
 
-# Using Claude (requires ANTHROPIC_API_KEY)
+# Using Claude (defaults to claude-3-5-haiku-20241022, requires ANTHROPIC_API_KEY)
 export ANTHROPIC_API_KEY='your-api-key-here'
+inbox-reaper process --provider claude
+
+# Using Claude Sonnet for better quality
 inbox-reaper process --provider claude --model claude-sonnet-4-5
 
 # Add keywords and whitelisted domains
@@ -132,19 +135,22 @@ inbox-reaper process --provider ollama --model gemma2:2b
 # Set your Anthropic API key
 export ANTHROPIC_API_KEY='your-api-key-here'
 
-# Use with inbox-reaper
+# Use with inbox-reaper (defaults to Haiku for speed and cost-effectiveness)
+inbox-reaper process --provider claude
+
+# Use Sonnet for better quality
 inbox-reaper process --provider claude --model claude-sonnet-4-5
 
 # Available Claude models:
-# - claude-sonnet-4-5 (latest, recommended)
-# - claude-opus-4
-# - claude-3-5-sonnet-20241022
+# - claude-3-5-haiku-20241022 (default - fast and cost-effective)
+# - claude-sonnet-4-5 (better quality, slower, more expensive)
+# - claude-opus-4 (highest quality, slowest, most expensive)
 ```
 
 ### Options
 
 - `--provider TEXT` - LLM provider: ollama or claude (default: ollama)
-- `--model TEXT` - Model name (default: gemma2:2b for Ollama)
+- `--model TEXT` - Model name (defaults: gemma2:2b for Ollama, claude-3-5-haiku-20241022 for Claude)
 - `--ollama-url TEXT` - Ollama base URL (default: http://localhost:11434)
 - `--batch-size INT` - Emails per batch (default: 50)
 - `--concurrent-limit INT` - Max concurrent AI requests (default: 25)

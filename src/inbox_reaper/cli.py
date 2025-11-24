@@ -37,9 +37,11 @@ def cli():
 )
 @click.option(
     "--model",
-    default="gemma2:2b",
-    help="Model name (e.g., 'gemma2:2b' for Ollama, 'claude-sonnet-4-5' for Claude)",
-    show_default=True,
+    default=None,
+    help=(
+        "Model name (defaults: 'gemma2:2b' for Ollama, "
+        "'claude-3-5-haiku-20241022' for Claude)"
+    ),
 )
 @click.option(
     "--ollama-url",
@@ -85,7 +87,7 @@ def cli():
 )
 def process(
     provider: str,
-    model: str,
+    model: str | None,
     ollama_url: str,
     batch_size: int,
     concurrent_limit: int,
@@ -100,10 +102,13 @@ def process(
     Currently uses mock data for demonstration purposes.
 
     Examples:
-        # Using Ollama (local)
-        inbox-reaper process --provider ollama --model gemma2:2b
+        # Using Ollama (local, defaults to gemma2:2b)
+        inbox-reaper process --provider ollama
 
-        # Using Claude (requires ANTHROPIC_API_KEY)
+        # Using Claude (defaults to Haiku, requires ANTHROPIC_API_KEY)
+        inbox-reaper process --provider claude
+
+        # Using Claude Sonnet for better quality
         inbox-reaper process --provider claude --model claude-sonnet-4-5
 
         # With filters
@@ -114,6 +119,14 @@ def process(
 
     # Convert provider string to enum
     llm_provider = LLMProvider.CLAUDE if provider == "claude" else LLMProvider.OLLAMA
+
+    # Set default model based on provider if not specified
+    if model is None:
+        model = (
+            "claude-3-5-haiku-20241022"
+            if llm_provider == LLMProvider.CLAUDE
+            else "gemma2:2b"
+        )
 
     # Validate provider-specific requirements
     if llm_provider == LLMProvider.CLAUDE:
