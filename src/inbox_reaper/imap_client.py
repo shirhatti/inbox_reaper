@@ -7,6 +7,7 @@ This module provides native async IMAP operations with:
 - Automatic token refresh detection
 """
 
+import asyncio
 import email
 import logging
 from datetime import datetime
@@ -98,11 +99,16 @@ class AsyncIMAPClient:
                 host=self.host, port=993, timeout=self.timeout
             )
 
-            # Wait for server greeting
-            await self.client.wait_hello_from_server()
+            # Wait for server greeting with timeout
+            await asyncio.wait_for(
+                self.client.wait_hello_from_server(), timeout=self.timeout
+            )
 
-            # Authenticate with XOAUTH2
-            response = await self.client.xoauth2(self.email_address, self.access_token)
+            # Authenticate with XOAUTH2 with timeout
+            response = await asyncio.wait_for(
+                self.client.xoauth2(self.email_address, self.access_token),
+                timeout=self.timeout,
+            )
 
             # Check authentication response
             if response.result != "OK":
@@ -124,6 +130,10 @@ class AsyncIMAPClient:
         except IMAPAuthError:
             # Re-raise auth errors for token refresh handling
             raise
+        except asyncio.TimeoutError as e:
+            raise IMAPConnectionError(
+                f"Connection timeout after {self.timeout}s connecting to {self.host}"
+            ) from e
         except Exception as e:
             raise IMAPConnectionError(f"Failed to connect to IMAP server: {e}") from e
 
