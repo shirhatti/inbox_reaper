@@ -192,9 +192,9 @@ class SenderStatsDB:
                             "sender": sender,
                             "marketing_count": stat_dict.get("marketing_count", 0),
                             "total_count": stat_dict.get("total_count", 0),
-                            "auto_delete": 1
-                            if stat_dict.get("auto_delete", False)
-                            else 0,
+                            "auto_delete": (
+                                1 if stat_dict.get("auto_delete", False) else 0
+                            ),
                             "last_updated": now,
                         }
                     )
