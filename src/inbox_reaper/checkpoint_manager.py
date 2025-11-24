@@ -50,6 +50,19 @@ class CheckpointManager:
         # Create watermark table if it doesn't exist
         self._init_watermark_table()
 
+    def close(self) -> None:
+        """Close the database connection."""
+        if not self.db.is_closed():
+            self.db.close()
+
+    def __enter__(self) -> "CheckpointManager":
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
+        """Context manager exit."""
+        self.close()
+
     def _init_watermark_table(self) -> None:
         """Initialize the watermark table for UID tracking."""
         self.db.connect(reuse_if_open=True)

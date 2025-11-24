@@ -9,6 +9,7 @@ Provides declarative models for:
 from datetime import datetime
 
 from peewee import (
+    SQL,
     BooleanField,
     CharField,
     DateTimeField,
@@ -50,7 +51,7 @@ class SenderStatsModel(BaseModel):
 class WatermarkModel(BaseModel):
     """Model for watermark/progress tracking table."""
 
-    id = IntegerField(primary_key=True, constraints=[lambda: "CHECK (id = 1)"])
+    id = IntegerField(primary_key=True, constraints=[SQL("CHECK (id = 1)")])
     last_processed_uid = CharField(null=True)
     last_update_time = CharField(null=True)
     total_processed = IntegerField(default=0)

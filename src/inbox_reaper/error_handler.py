@@ -263,6 +263,19 @@ class QuarantineManager:
 
         self._init_database()
 
+    def close(self) -> None:
+        """Close the database connection."""
+        if not self.db.is_closed():
+            self.db.close()
+
+    def __enter__(self) -> "QuarantineManager":
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
+        """Context manager exit."""
+        self.close()
+
     def _init_database(self) -> None:
         """Initialize quarantine database schema."""
         from inbox_reaper.models import QuarantineModel
