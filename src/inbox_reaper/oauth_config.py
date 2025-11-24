@@ -15,8 +15,8 @@ OAUTH_CONFIGS = {
     },
     "outlook": {
         "client_id": "9e5f94bc-e8a4-4e73-b8be-63364c29d753",  # Thunderbird's Azure app (public client)
-        "auth_uri": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-        "token_uri": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        "auth_uri": "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
+        "token_uri": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
         "scope": "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access",  # noqa: E501
         "redirect_uri": "http://localhost:9004",
     },
