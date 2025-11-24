@@ -8,6 +8,7 @@ This module handles the OAuth 2.0 authentication flow with PKCE, including:
 """
 
 import base64
+import imaplib
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -194,10 +195,10 @@ def generate_xoauth2_string(email: str, access_token: str) -> str:
     return base64.b64encode(auth_string.encode()).decode()
 
 
-def test_imap_connection(
+def verify_imap_connection(
     email: str, access_token: str, provider: str
 ) -> tuple[bool, str]:
-    """Test IMAP connection with OAuth credentials.
+    """Verify IMAP connection with OAuth credentials.
 
     Args:
         email: User's email address
@@ -207,8 +208,6 @@ def test_imap_connection(
     Returns:
         Tuple of (success: bool, message: str)
     """
-    import imaplib
-
     try:
         # Determine IMAP host
         if provider == "gmail":
@@ -223,7 +222,7 @@ def test_imap_connection(
 
         # Authenticate using XOAUTH2
         auth_string = generate_xoauth2_string(email, access_token)
-        imap.authenticate("XOAUTH2", lambda x: auth_string)  # type: ignore[arg-type,return-value]
+        imap.authenticate("XOAUTH2", lambda x: auth_string.encode())  # type: ignore[arg-type,return-value]
 
         # Select INBOX to verify connection
         imap.select("INBOX")
