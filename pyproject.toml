@@ -3,7 +3,7 @@ name = "inbox-reaper"
 version = "0.1.0"
 description = "Email classification and cleaning system using hybrid deterministic + AI pipeline"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 dependencies = [
     "click>=8.1.0",
     "google-genai>=0.3.0",
