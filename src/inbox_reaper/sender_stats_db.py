@@ -33,7 +33,8 @@ class SenderStatsDB:
             cursor = conn.cursor()
 
             # Create sender_stats table
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sender_stats (
                     sender TEXT PRIMARY KEY,
                     marketing_count INTEGER NOT NULL DEFAULT 0,
@@ -41,19 +42,24 @@ class SenderStatsDB:
                     auto_delete INTEGER NOT NULL DEFAULT 0,
                     last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
-            """)
+            """
+            )
 
             # Create indexes for performance
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_auto_delete
                 ON sender_stats(auto_delete)
                 WHERE auto_delete = 1
-            """)
+            """
+            )
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_last_updated
                 ON sender_stats(last_updated)
-            """)
+            """
+            )
 
             conn.commit()
 
@@ -87,10 +93,12 @@ class SenderStatsDB:
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT sender, marketing_count, total_count, auto_delete
                 FROM sender_stats
-            """)
+            """
+            )
 
             stats = {}
             for row in cursor.fetchall():
@@ -138,12 +146,14 @@ class SenderStatsDB:
                     (threshold,),
                 )
             else:
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT sender
                     FROM sender_stats
                     WHERE auto_delete = 1
                     ORDER BY marketing_count DESC
-                """)
+                """
+                )
 
             return [row["sender"] for row in cursor.fetchall()]
 
