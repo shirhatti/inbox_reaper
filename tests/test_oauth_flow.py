@@ -20,21 +20,20 @@ class TestGenerateXOAuth2String:
 
         result = generate_xoauth2_string(email, token)
 
-        # Decode to verify format
-        decoded = base64.b64decode(result).decode()
+        # Result should be raw string (not base64-encoded)
         expected = f"user={email}\x01auth=Bearer {token}\x01\x01"
-        assert decoded == expected
+        assert result == expected
 
-    def test_returns_base64_string(self):
-        """Test that result is a valid base64 string."""
+    def test_returns_string(self):
+        """Test that result is a string."""
         result = generate_xoauth2_string("test@example.com", "token123")
 
         # Should be a string
         assert isinstance(result, str)
 
-        # Should be valid base64 (won't raise exception)
-        decoded = base64.b64decode(result)
-        assert decoded is not None
+        # Should contain expected components
+        assert "user=test@example.com" in result
+        assert "auth=Bearer token123" in result
 
     def test_different_emails_produce_different_strings(self):
         """Test that different emails produce different auth strings."""
