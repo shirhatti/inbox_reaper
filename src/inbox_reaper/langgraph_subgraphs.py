@@ -356,7 +356,8 @@ From: {email.sender}
 Body preview: {body_preview}
 
 Analyze whether this is a marketing/promotional email that can be safely deleted.
-Provide your classification and a confidence score (0.0 to 1.0) for how certain you are."""
+Provide your classification and a confidence score (0.0 to 1.0) for how certain
+you are."""
 
     try:
         # Use async MLX inference with JSON schema enforcement
