@@ -7,7 +7,7 @@ pure functional programming patterns.
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Decision(str, Enum):
@@ -32,6 +32,8 @@ class FilterReason(str, Enum):
 class Email(BaseModel):
     """Immutable email data."""
 
+    model_config = ConfigDict(frozen=True)
+
     uid: str
     subject: str
     sender: str
@@ -39,12 +41,11 @@ class Email(BaseModel):
     date: datetime
     attachments: list[str] = Field(default_factory=list)
 
-    class Config:
-        frozen = True
-
 
 class EmailDecision(BaseModel):
     """Decision for a single email with metadata."""
+
+    model_config = ConfigDict(frozen=True)
 
     email: Email
     decision: Decision
@@ -52,20 +53,16 @@ class EmailDecision(BaseModel):
     confidence: float = 1.0
     processed_at: datetime = Field(default_factory=datetime.now)
 
-    class Config:
-        frozen = True
-
 
 class SenderStats(BaseModel):
     """Statistics for a sender across multiple emails."""
+
+    model_config = ConfigDict(frozen=True)
 
     sender: str
     marketing_count: int = 0
     total_count: int = 0
     auto_delete: bool = False
-
-    class Config:
-        frozen = True
 
     def should_auto_delete(self, threshold: int = 5) -> bool:
         """Check if sender has enough marketing emails to auto-delete."""
@@ -74,6 +71,8 @@ class SenderStats(BaseModel):
 
 class Config(BaseModel):
     """Configuration for the email classification pipeline."""
+
+    model_config = ConfigDict(frozen=True)
 
     # AI settings
     concurrent_ai_limit: int = 25
@@ -105,9 +104,6 @@ class Config(BaseModel):
     # Safety
     dry_run: bool = True
 
-    class Config:
-        frozen = True
-
 
 class ProcessingState(BaseModel):
     """Complete state for the email processing pipeline.
@@ -115,6 +111,8 @@ class ProcessingState(BaseModel):
     This is the single source of truth that flows through the DAG.
     All transformations are pure functions: State -> State.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     # Configuration
     config: Config
@@ -141,9 +139,6 @@ class ProcessingState(BaseModel):
 
     # Error handling
     errors: list[str] = Field(default_factory=list)
-
-    class Config:
-        frozen = True
 
     def add_decision(self, decision: EmailDecision) -> "ProcessingState":
         """Pure function to add a decision and update counters."""
