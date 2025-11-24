@@ -443,7 +443,7 @@ class AsyncIMAPClient:
                     parts = line_str.split()
                     for i, part in enumerate(parts):
                         if part == "UID" and i + 1 < len(parts):
-                            uid = parts[i + 1].rstrip(')')
+                            uid = parts[i + 1].rstrip(")")
                             uids.append(uid)
                             break
 
