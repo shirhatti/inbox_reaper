@@ -7,7 +7,6 @@ This module handles the OAuth 2.0 authentication flow with PKCE, including:
 - Token refresh
 """
 
-import base64
 import imaplib
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
