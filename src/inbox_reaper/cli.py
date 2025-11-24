@@ -3,16 +3,24 @@
 Provides a Click-based command-line interface for the email classification system.
 """
 
+import difflib
+import json
+import os
+import subprocess
+import tempfile
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import click
 from google import genai
 
 from . import credential_helper
 from .dag import run_pipeline, run_pipeline_with_adk
+from .imap_fetcher import fetch_emails
 from .oauth_config import detect_provider
 from .oauth_flow import perform_oauth_flow, refresh_access_token, verify_imap_connection
-from .state import Config, Email, ProcessingState
+from .sanitizer import PiiSanitizer, dict_to_email, email_to_dict
+from .state import Config, Decision, Email, ProcessingState
 
 
 @click.group()
@@ -357,6 +365,244 @@ def test(email: str):
         click.echo(f"✓ {message}")
     else:
         click.echo(f"✗ {message}", err=True)
+
+
+@cli.command()
+@click.argument("email")
+@click.option(
+    "--count",
+    "-n",
+    default=10,
+    type=int,
+    help="Number of emails to fetch",
+    show_default=True,
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    default="test_data/golden",
+    help="Output directory for test data",
+    show_default=True,
+)
+def create_test_data(email: str, count: int, output_dir: str):
+    """Create golden test dataset from real emails with PII sanitization.
+
+    This command fetches emails from your account, applies automatic PII
+    sanitization, and guides you through an interactive review process.
+    You'll label each email and review sanitization in your $EDITOR.
+
+    Example:
+        inbox-reaper create-test-data user@gmail.com --count 20
+    """
+    click.echo("🔬 Golden Dataset Creator")
+    click.echo("=" * 60)
+
+    # Check for EDITOR
+    editor = os.environ.get("EDITOR")
+    if not editor:
+        click.echo(
+            "⚠️  $EDITOR environment variable not set. Using 'vi' as default.",
+            err=True,
+        )
+        editor = "vi"
+
+    # Get credentials
+    creds = credential_helper.get_credentials(email)
+    if not creds:
+        click.echo(f"✗ No credentials found for {email}", err=True)
+        click.echo(f"\nUse 'inbox-reaper login {email}' to authenticate first.")
+        return
+
+    # Refresh token if expired
+    try:
+        expires = datetime.fromisoformat(creds.get("expires_at", ""))
+        if expires < datetime.now():
+            click.echo("🔄 Token expired, refreshing...")
+            tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
+            creds["access_token"] = tokens["access_token"]
+            creds["expires_at"] = (
+                datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
+            ).isoformat()
+            credential_helper.store_credentials(email, creds)
+    except Exception as e:
+        click.echo(f"⚠️  Could not refresh token: {e}", err=True)
+
+    # Fetch emails
+    click.echo(f"\n📧 Fetching {count} emails from {email}...")
+    try:
+        emails = fetch_emails(email, creds["access_token"], creds["provider"], count)
+        click.echo(f"✓ Fetched {len(emails)} emails")
+    except Exception as e:
+        click.echo(f"✗ Failed to fetch emails: {e}", err=True)
+        return
+
+    if not emails:
+        click.echo("No emails found.")
+        return
+
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Initialize sanitizer
+    sanitizer = PiiSanitizer()
+
+    # Process each email
+    click.echo(f"\n🔍 Processing {len(emails)} emails...")
+    click.echo("=" * 60)
+
+    saved_count = 0
+    for i, original_email in enumerate(emails, 1):
+        click.echo(f"\n📬 Email {i}/{len(emails)}")
+        click.echo("-" * 60)
+        click.echo(f"From: {original_email.sender}")
+        click.echo(f"Subject: {original_email.subject}")
+        click.echo(f"Date: {original_email.date}")
+        click.echo(
+            f"Body preview: {original_email.body[:100]}..."
+            if len(original_email.body) > 100
+            else f"Body: {original_email.body}"
+        )
+
+        # Ask if user wants to include this email
+        include = click.confirm("\nInclude this email in test dataset?", default=True)
+        if not include:
+            continue
+
+        # Sanitize email
+        sanitized_email = sanitizer.sanitize_email(original_email)
+
+        # Create diff for review
+        original_dict = email_to_dict(original_email)
+        sanitized_dict = email_to_dict(sanitized_email)
+
+        original_json = json.dumps(original_dict, indent=2)
+        sanitized_json = json.dumps(sanitized_dict, indent=2)
+
+        diff = "\n".join(
+            difflib.unified_diff(
+                original_json.splitlines(),
+                sanitized_json.splitlines(),
+                fromfile="original.json",
+                tofile="sanitized.json",
+                lineterm="",
+            )
+        )
+
+        # Write diff to temp file and open in editor
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".diff", delete=False
+        ) as tmp:
+            tmp.write("# Review PII Sanitization\n")
+            tmp.write("# Lines starting with - are from original\n")
+            tmp.write("# Lines starting with + are sanitized\n")
+            tmp.write("# Close the editor when done reviewing\n")
+            tmp.write("\n")
+            tmp.write(diff)
+            tmp_path = tmp.name
+
+        click.echo(f"\n📝 Opening diff in {editor}...")
+        click.echo(
+            "Review the sanitization. Close the editor when done (changes won't be saved)."
+        )
+
+        try:
+            subprocess.run([editor, tmp_path], check=True)
+        except subprocess.CalledProcessError:
+            click.echo("⚠️  Editor exited with error, continuing...")
+        except FileNotFoundError:
+            click.echo(f"⚠️  Editor '{editor}' not found, skipping review...")
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+        # Ask for additional manual edits to sanitized email
+        if click.confirm("\nMake manual edits to sanitized email?", default=False):
+            # Open sanitized JSON in editor for manual editing
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False
+            ) as tmp:
+                tmp.write(sanitized_json)
+                tmp_path = tmp.name
+
+            try:
+                subprocess.run([editor, tmp_path], check=True)
+
+                # Read back edited content
+                with open(tmp_path) as f:
+                    edited_json = f.read()
+                    sanitized_dict = json.loads(edited_json)
+                    sanitized_email = dict_to_email(sanitized_dict)
+
+                click.echo("✓ Manual edits applied")
+            except subprocess.CalledProcessError:
+                click.echo("⚠️  Editor exited with error, using auto-sanitized version")
+            except json.JSONDecodeError as e:
+                click.echo(f"⚠️  Invalid JSON after editing: {e}")
+                click.echo("Using auto-sanitized version")
+            except Exception as e:
+                click.echo(f"⚠️  Error reading edits: {e}")
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        # Ask for ground truth labels
+        click.echo("\n🏷️  Label this email:")
+        decision = click.prompt(
+            "Decision",
+            type=click.Choice(["keep", "delete"], case_sensitive=False),
+            default="delete",
+        )
+
+        reason = click.prompt(
+            "Why? (e.g., 'marketing newsletter', 'important bill', 'personal email')",
+            type=str,
+            default="marketing",
+        )
+
+        notes = click.prompt(
+            "Additional notes (optional)", type=str, default="", show_default=False
+        )
+
+        # Create test data entry
+        test_entry = {
+            "email": email_to_dict(sanitized_email),
+            "ground_truth": {
+                "decision": decision,
+                "reason": reason,
+                "notes": notes,
+                "created_at": datetime.now().isoformat(),
+                "created_from_account": email,
+            },
+        }
+
+        # Save to file
+        filename = f"{decision}_{sanitized_email.uid}_{i:03d}.json"
+        filepath = output_path / filename
+
+        with open(filepath, "w") as f:
+            json.dump(test_entry, f, indent=2)
+
+        click.echo(f"✓ Saved to {filepath}")
+        saved_count += 1
+
+    # Summary
+    click.echo("\n" + "=" * 60)
+    click.echo("✅ Test Data Creation Complete!")
+    click.echo(f"📊 Saved {saved_count} out of {len(emails)} emails")
+    click.echo(f"📁 Output directory: {output_path.absolute()}")
+
+    # Show sanitization statistics
+    click.echo("\n🔒 PII Sanitization Statistics:")
+    click.echo(f"  Emails sanitized: {len(sanitizer.email_map)}")
+    click.echo(f"  Domains mapped: {len(sanitizer.domain_map)}")
+    click.echo(f"  Phone numbers redacted: {len(sanitizer.phone_map)}")
+    click.echo(f"  Names anonymized: {sanitizer.name_counter}")
 
 
 def main():
