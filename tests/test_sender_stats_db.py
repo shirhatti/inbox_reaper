@@ -35,7 +35,9 @@ def temp_db():
 @pytest.fixture
 def db(temp_db):
     """Create a SenderStatsDB instance with temporary database."""
-    return SenderStatsDB(temp_db)
+    database = SenderStatsDB(temp_db)
+    yield database
+    database.close()
 
 
 class TestDatabaseInitialization:
@@ -43,13 +45,15 @@ class TestDatabaseInitialization:
 
     def test_init_creates_database_file(self, temp_db):
         """Test that initialization creates the database file."""
-        SenderStatsDB(temp_db)
+        db = SenderStatsDB(temp_db)
+        db.close()
 
         assert Path(temp_db).exists()
 
     def test_init_creates_tables(self, temp_db):
         """Test that initialization creates required tables."""
-        SenderStatsDB(temp_db)
+        db = SenderStatsDB(temp_db)
+        db.close()
 
         conn = sqlite3.connect(temp_db)
         cursor = conn.cursor()
@@ -68,7 +72,8 @@ class TestDatabaseInitialization:
 
     def test_init_creates_indexes(self, temp_db):
         """Test that initialization creates performance indexes."""
-        SenderStatsDB(temp_db)
+        db = SenderStatsDB(temp_db)
+        db.close()
 
         conn = sqlite3.connect(temp_db)
         cursor = conn.cursor()
@@ -91,12 +96,15 @@ class TestDatabaseInitialization:
         db1 = SenderStatsDB(temp_db)
         db1.update_sender("test@example.com", 5, 10, False)
 
+        db1.close()
+
         # Reopen database
         db2 = SenderStatsDB(temp_db)
         stats = db2.get_sender_stats("test@example.com")
 
         assert stats is not None
         assert stats["marketing_count"] == 5
+        db2.close()
 
 
 class TestUpdateSender:

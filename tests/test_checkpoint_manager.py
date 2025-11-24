@@ -37,7 +37,9 @@ def temp_checkpoint_db():
 @pytest.fixture
 def checkpoint_manager(temp_checkpoint_db):
     """Create a CheckpointManager instance with temporary database."""
-    return CheckpointManager(temp_checkpoint_db)
+    manager = CheckpointManager(temp_checkpoint_db)
+    yield manager
+    manager.close()
 
 
 class TestCheckpointInitialization:
@@ -45,7 +47,8 @@ class TestCheckpointInitialization:
 
     def test_init_creates_database_file(self, temp_checkpoint_db):
         """Test that initialization creates the database file."""
-        CheckpointManager(temp_checkpoint_db)
+        manager = CheckpointManager(temp_checkpoint_db)
+        manager.close()
 
         assert Path(temp_checkpoint_db).exists()
 
@@ -521,6 +524,7 @@ class TestCheckpointPersistence:
         manager1 = CheckpointManager(temp_checkpoint_db)
         manager1.update_watermark("12345")
         manager1.update_stats(100, 60, 40, 0)
+        manager1.close()
 
         # Second session (new manager instance)
         manager2 = CheckpointManager(temp_checkpoint_db)
@@ -530,18 +534,23 @@ class TestCheckpointPersistence:
         stats = manager2.get_progress_stats()
         assert stats["total_processed"] == 100
         assert stats["total_deleted"] == 60
+        manager2.close()
 
     def test_multiple_managers_same_database(self, temp_checkpoint_db):
         """Test multiple managers can access same database safely."""
         manager1 = CheckpointManager(temp_checkpoint_db)
         manager2 = CheckpointManager(temp_checkpoint_db)
 
-        manager1.update_watermark("12345")
-        assert manager2.get_last_processed_uid() == "12345"
+        try:
+            manager1.update_watermark("12345")
+            assert manager2.get_last_processed_uid() == "12345"
 
-        manager2.update_stats(100, 60, 40, 0)
-        stats = manager1.get_progress_stats()
-        assert stats["total_processed"] == 100
+            manager2.update_stats(100, 60, 40, 0)
+            stats = manager1.get_progress_stats()
+            assert stats["total_processed"] == 100
+        finally:
+            manager1.close()
+            manager2.close()
 
 
 class TestEdgeCases:

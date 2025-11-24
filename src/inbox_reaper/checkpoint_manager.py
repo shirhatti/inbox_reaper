@@ -5,14 +5,16 @@ SqliteSaver to enable resumable email processing with progress tracking and
 watermarking.
 """
 
-import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import click
 from langgraph.checkpoint.sqlite import SqliteSaver
+from peewee import SqliteDatabase
+
+from inbox_reaper.models import WatermarkModel
 
 from .langgraph_state import GraphState
 
@@ -36,6 +38,10 @@ class CheckpointManager:
         self.checkpoint_path = Path(checkpoint_path)
         self.checkpointer = SqliteSaver.from_conn_string(str(self.checkpoint_path))
 
+        # Initialize database for watermark table
+        self.db = SqliteDatabase(str(self.checkpoint_path))
+        WatermarkModel._meta.database = self.db
+
         # Progress tracking
         self._start_time: float | None = None
         self._last_update_time: float | None = None
@@ -44,35 +50,39 @@ class CheckpointManager:
         # Create watermark table if it doesn't exist
         self._init_watermark_table()
 
+    def close(self) -> None:
+        """Close the database connection."""
+        # Close the checkpointer's connection
+        if hasattr(self.checkpointer, "conn") and self.checkpointer.conn:
+            self.checkpointer.conn.close()
+        # Close the Peewee database connection
+        if not self.db.is_closed():
+            self.db.close()
+
+    def __enter__(self) -> "CheckpointManager":
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
+        """Context manager exit."""
+        self.close()
+
     def _init_watermark_table(self) -> None:
         """Initialize the watermark table for UID tracking."""
-        conn = sqlite3.connect(self.checkpoint_path)
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS watermarks (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    last_processed_uid TEXT,
-                    last_update_time TEXT,
-                    total_processed INTEGER DEFAULT 0,
-                    total_deleted INTEGER DEFAULT 0,
-                    total_kept INTEGER DEFAULT 0,
-                    total_errors INTEGER DEFAULT 0
-                )
-                """
+        self.db.connect(reuse_if_open=True)
+        self.db.create_tables([WatermarkModel], safe=True)
+
+        # Initialize with default row if empty
+        if not WatermarkModel.select().where(WatermarkModel.id == 1).exists():
+            WatermarkModel.create(
+                id=1,
+                last_processed_uid=None,
+                last_update_time=None,
+                total_processed=0,
+                total_deleted=0,
+                total_kept=0,
+                total_errors=0,
             )
-            # Initialize with default row if empty
-            cursor.execute(
-                """
-                INSERT OR IGNORE INTO watermarks
-                (id, last_processed_uid, last_update_time)
-                VALUES (1, NULL, NULL)
-                """
-            )
-            conn.commit()
-        finally:
-            conn.close()
 
     def get_last_processed_uid(self) -> str | None:
         """Get the last successfully processed UID watermark.
@@ -80,14 +90,11 @@ class CheckpointManager:
         Returns:
             The last processed UID, or None if no checkpoint exists
         """
-        conn = sqlite3.connect(self.checkpoint_path)
         try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT last_processed_uid FROM watermarks WHERE id = 1")
-            result = cursor.fetchone()
-            return result[0] if result else None
-        finally:
-            conn.close()
+            watermark = WatermarkModel.get(WatermarkModel.id == 1)
+            return cast(str | None, watermark.last_processed_uid)
+        except WatermarkModel.DoesNotExist:
+            return None
 
     def update_watermark(self, uid: str) -> None:
         """Update the progress watermark with the last processed UID.
@@ -95,21 +102,9 @@ class CheckpointManager:
         Args:
             uid: The UID of the last successfully processed email
         """
-        conn = sqlite3.connect(self.checkpoint_path)
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE watermarks
-                SET last_processed_uid = ?,
-                    last_update_time = ?
-                WHERE id = 1
-                """,
-                (uid, datetime.now().isoformat()),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        WatermarkModel.update(
+            last_processed_uid=uid, last_update_time=datetime.now().isoformat()
+        ).where(WatermarkModel.id == 1).execute()
 
     def update_stats(
         self,
@@ -126,23 +121,12 @@ class CheckpointManager:
             total_kept: Total number of emails kept
             total_errors: Total number of errors encountered
         """
-        conn = sqlite3.connect(self.checkpoint_path)
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE watermarks
-                SET total_processed = ?,
-                    total_deleted = ?,
-                    total_kept = ?,
-                    total_errors = ?
-                WHERE id = 1
-                """,
-                (total_processed, total_deleted, total_kept, total_errors),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        WatermarkModel.update(
+            total_processed=total_processed,
+            total_deleted=total_deleted,
+            total_kept=total_kept,
+            total_errors=total_errors,
+        ).where(WatermarkModel.id == 1).execute()
 
     def clear_checkpoint(self) -> None:
         """Clear checkpoint data on successful completion.
@@ -150,25 +134,15 @@ class CheckpointManager:
         This removes the watermark and resets statistics, but preserves
         the LangGraph checkpoint history for debugging.
         """
-        conn = sqlite3.connect(self.checkpoint_path)
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE watermarks
-                SET last_processed_uid = NULL,
-                    last_update_time = NULL,
-                    total_processed = 0,
-                    total_deleted = 0,
-                    total_kept = 0,
-                    total_errors = 0
-                WHERE id = 1
-                """
-            )
-            conn.commit()
-            click.echo("✓ Checkpoint cleared successfully")
-        finally:
-            conn.close()
+        WatermarkModel.update(
+            last_processed_uid=None,
+            last_update_time=None,
+            total_processed=0,
+            total_deleted=0,
+            total_kept=0,
+            total_errors=0,
+        ).where(WatermarkModel.id == 1).execute()
+        click.echo("✓ Checkpoint cleared successfully")
 
     def get_progress_stats(self) -> dict[str, Any]:
         """Get current progress statistics from the checkpoint.
@@ -182,38 +156,25 @@ class CheckpointManager:
             - total_kept: Total emails kept
             - total_errors: Total errors encountered
         """
-        conn = sqlite3.connect(self.checkpoint_path)
         try:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT last_processed_uid, last_update_time,
-                       total_processed, total_deleted, total_kept, total_errors
-                FROM watermarks WHERE id = 1
-                """
-            )
-            result = cursor.fetchone()
-
-            if not result:
-                return {
-                    "last_processed_uid": None,
-                    "last_update_time": None,
-                    "total_processed": 0,
-                    "total_deleted": 0,
-                    "total_kept": 0,
-                    "total_errors": 0,
-                }
-
+            watermark = WatermarkModel.get(WatermarkModel.id == 1)
             return {
-                "last_processed_uid": result[0],
-                "last_update_time": result[1],
-                "total_processed": result[2] or 0,
-                "total_deleted": result[3] or 0,
-                "total_kept": result[4] or 0,
-                "total_errors": result[5] or 0,
+                "last_processed_uid": watermark.last_processed_uid,
+                "last_update_time": watermark.last_update_time,
+                "total_processed": watermark.total_processed or 0,
+                "total_deleted": watermark.total_deleted or 0,
+                "total_kept": watermark.total_kept or 0,
+                "total_errors": watermark.total_errors or 0,
             }
-        finally:
-            conn.close()
+        except WatermarkModel.DoesNotExist:
+            return {
+                "last_processed_uid": None,
+                "last_update_time": None,
+                "total_processed": 0,
+                "total_deleted": 0,
+                "total_kept": 0,
+                "total_errors": 0,
+            }
 
     def display_progress(
         self,
@@ -384,22 +345,12 @@ class CheckpointManager:
             return False, "Checkpoint database does not exist"
 
         try:
-            conn = sqlite3.connect(self.checkpoint_path)
-            cursor = conn.cursor()
-
             # Check if watermarks table exists
-            cursor.execute(
-                """
-                SELECT name FROM sqlite_master
-                WHERE type='table' AND name='watermarks'
-                """
-            )
-            if not cursor.fetchone():
-                conn.close()
+            if not WatermarkModel.table_exists():
                 return False, "Watermarks table missing"
 
-            # Check if LangGraph checkpoint tables exist
-            cursor.execute(
+            # Check if LangGraph checkpoint tables exist using raw SQL
+            cursor = self.db.execute_sql(
                 """
                 SELECT name FROM sqlite_master
                 WHERE type='table' AND name='checkpoints'
@@ -408,12 +359,9 @@ class CheckpointManager:
             has_checkpoints = cursor.fetchone() is not None
 
             # Get watermark stats
-            cursor.execute("SELECT * FROM watermarks WHERE id = 1")
-            watermark = cursor.fetchone()
-
-            conn.close()
-
-            if not watermark:
+            try:
+                WatermarkModel.get(WatermarkModel.id == 1)
+            except WatermarkModel.DoesNotExist:
                 return False, "Watermark record missing"
 
             if has_checkpoints:
@@ -424,7 +372,7 @@ class CheckpointManager:
             else:
                 return True, "Checkpoint integrity verified (watermark only)"
 
-        except sqlite3.Error as e:
+        except Exception as e:
             return False, f"Database error: {e}"
 
     def get_resume_info(self) -> dict[str, Any]:

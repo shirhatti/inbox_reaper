@@ -10,7 +10,6 @@ This module provides:
 
 import functools
 import logging
-import sqlite3
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -244,7 +243,7 @@ class CircuitBreaker:
 
 
 class QuarantineManager:
-    """Manages quarantined emails with SQLite storage."""
+    """Manages quarantined emails with SQLite storage using Peewee ORM."""
 
     def __init__(self, quarantine_path: str = "quarantine.db"):
         """Initialize quarantine manager.
@@ -252,48 +251,38 @@ class QuarantineManager:
         Args:
             quarantine_path: Path to SQLite quarantine database
         """
+        from peewee import SqliteDatabase
+
+        from inbox_reaper.models import QuarantineModel
+
         self.quarantine_path = Path(quarantine_path)
+
+        # Initialize database
+        self.db = SqliteDatabase(str(self.quarantine_path))
+        QuarantineModel._meta.database = self.db
+
         self._init_database()
+
+    def close(self) -> None:
+        """Close the database connection."""
+        if not self.db.is_closed():
+            self.db.close()
+
+    def __enter__(self) -> "QuarantineManager":
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
+        """Context manager exit."""
+        self.close()
 
     def _init_database(self) -> None:
         """Initialize quarantine database schema."""
-        conn = sqlite3.connect(self.quarantine_path)
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS quarantine (
-                    uid TEXT PRIMARY KEY,
-                    email_data TEXT NOT NULL,
-                    error_type TEXT NOT NULL,
-                    error_message TEXT NOT NULL,
-                    attempts INTEGER DEFAULT 1,
-                    quarantined_at TEXT NOT NULL,
-                    last_retry_at TEXT,
-                    resolved BOOLEAN DEFAULT 0
-                )
-                """
-            )
+        from inbox_reaper.models import QuarantineModel
 
-            # Create index for efficient queries
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_quarantine_resolved
-                ON quarantine(resolved)
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_quarantine_error_type
-                ON quarantine(error_type)
-                """
-            )
-
-            conn.commit()
-            logger.info(f"Quarantine database initialized at {self.quarantine_path}")
-        finally:
-            conn.close()
+        self.db.connect(reuse_if_open=True)
+        self.db.create_tables([QuarantineModel], safe=True)
+        logger.info(f"Quarantine database initialized at {self.quarantine_path}")
 
     def add_to_quarantine(
         self,
@@ -310,65 +299,39 @@ class QuarantineManager:
             error: Exception that caused quarantine
             error_category: Optional error category
         """
+        import json
+
+        from inbox_reaper.models import QuarantineModel
+
         if error_category is None:
             error_category = ErrorTaxonomy.categorize_error(error)
 
-        conn = sqlite3.connect(self.quarantine_path)
+        email_json = json.dumps(email_data)
+
         try:
-            cursor = conn.cursor()
-
             # Check if already quarantined
-            cursor.execute("SELECT attempts FROM quarantine WHERE uid = ?", (uid,))
-            result = cursor.fetchone()
-
-            import json
-
-            email_json = json.dumps(email_data)
-
-            if result:
-                # Update existing quarantine record
-                attempts = result[0] + 1
-                cursor.execute(
-                    """
-                    UPDATE quarantine
-                    SET attempts = ?,
-                        error_type = ?,
-                        error_message = ?,
-                        last_retry_at = ?
-                    WHERE uid = ?
-                    """,
-                    (
-                        attempts,
-                        error_category.value,
-                        str(error),
-                        datetime.now().isoformat(),
-                        uid,
-                    ),
-                )
-                logger.warning(
-                    f"Updated quarantine for UID {uid} (attempt {attempts}): {error}"
-                )
-            else:
-                # Insert new quarantine record
-                cursor.execute(
-                    """
-                    INSERT INTO quarantine
-                    (uid, email_data, error_type, error_message, quarantined_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        uid,
-                        email_json,
-                        error_category.value,
-                        str(error),
-                        datetime.now().isoformat(),
-                    ),
-                )
-                logger.warning(f"Quarantined email UID {uid}: {error}")
-
-            conn.commit()
-        finally:
-            conn.close()
+            existing = QuarantineModel.get(QuarantineModel.uid == uid)
+            # Update existing quarantine record
+            attempts = existing.attempts + 1
+            QuarantineModel.update(
+                attempts=attempts,
+                error_type=error_category.value,
+                error_message=str(error),
+                last_retry_at=datetime.now().isoformat(),
+            ).where(QuarantineModel.uid == uid).execute()
+            logger.warning(
+                f"Updated quarantine for UID {uid} (attempt {attempts}): {error}"
+            )
+        except QuarantineModel.DoesNotExist:
+            # Insert new quarantine record
+            QuarantineModel.create(
+                uid=uid,
+                email_data=email_json,
+                error_type=error_category.value,
+                error_message=str(error),
+                quarantined_at=datetime.now().isoformat(),
+            )
+            logger.warning(f"Quarantined email UID {uid}: {error}")
 
     def get_quarantined_emails(
         self, error_type: ErrorCategory | None = None, resolved: bool = False
@@ -382,53 +345,33 @@ class QuarantineManager:
         Returns:
             List of quarantined email records
         """
-        conn = sqlite3.connect(self.quarantine_path)
-        try:
-            cursor = conn.cursor()
+        import json
 
-            if error_type:
-                cursor.execute(
-                    """
-                    SELECT uid, email_data, error_type, error_message,
-                           attempts, quarantined_at, last_retry_at, resolved
-                    FROM quarantine
-                    WHERE error_type = ? AND resolved = ?
-                    ORDER BY quarantined_at DESC
-                    """,
-                    (error_type.value, 1 if resolved else 0),
-                )
-            else:
-                cursor.execute(
-                    """
-                    SELECT uid, email_data, error_type, error_message,
-                           attempts, quarantined_at, last_retry_at, resolved
-                    FROM quarantine
-                    WHERE resolved = ?
-                    ORDER BY quarantined_at DESC
-                    """,
-                    (1 if resolved else 0,),
-                )
+        from inbox_reaper.models import QuarantineModel
 
-            import json
+        query = QuarantineModel.select().where(QuarantineModel.resolved == resolved)
 
-            results = []
-            for row in cursor.fetchall():
-                results.append(
-                    {
-                        "uid": row[0],
-                        "email_data": json.loads(row[1]),
-                        "error_type": row[2],
-                        "error_message": row[3],
-                        "attempts": row[4],
-                        "quarantined_at": row[5],
-                        "last_retry_at": row[6],
-                        "resolved": bool(row[7]),
-                    }
-                )
+        if error_type:
+            query = query.where(QuarantineModel.error_type == error_type.value)
 
-            return results
-        finally:
-            conn.close()
+        query = query.order_by(QuarantineModel.quarantined_at.desc())
+
+        results = []
+        for record in query:
+            results.append(
+                {
+                    "uid": record.uid,
+                    "email_data": json.loads(record.email_data),
+                    "error_type": record.error_type,
+                    "error_message": record.error_message,
+                    "attempts": record.attempts,
+                    "quarantined_at": record.quarantined_at,
+                    "last_retry_at": record.last_retry_at,
+                    "resolved": record.resolved,
+                }
+            )
+
+        return results
 
     def mark_resolved(self, uid: str) -> None:
         """Mark a quarantined email as resolved.
@@ -436,14 +379,12 @@ class QuarantineManager:
         Args:
             uid: Email UID to mark as resolved
         """
-        conn = sqlite3.connect(self.quarantine_path)
-        try:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE quarantine SET resolved = 1 WHERE uid = ?", (uid,))
-            conn.commit()
-            logger.info(f"Marked quarantined email {uid} as resolved")
-        finally:
-            conn.close()
+        from inbox_reaper.models import QuarantineModel
+
+        QuarantineModel.update(resolved=True).where(
+            QuarantineModel.uid == uid
+        ).execute()
+        logger.info(f"Marked quarantined email {uid} as resolved")
 
     def export_quarantine(self, output_path: str) -> None:
         """Export quarantine to JSON file for manual review.
@@ -466,45 +407,43 @@ class QuarantineManager:
         Returns:
             Dictionary with quarantine stats
         """
-        conn = sqlite3.connect(self.quarantine_path)
-        try:
-            cursor = conn.cursor()
+        from peewee import fn
 
-            # Total counts
-            cursor.execute("SELECT COUNT(*) FROM quarantine WHERE resolved = 0")
-            total_quarantined = cursor.fetchone()[0]
+        from inbox_reaper.models import QuarantineModel
 
-            cursor.execute("SELECT COUNT(*) FROM quarantine WHERE resolved = 1")
-            total_resolved = cursor.fetchone()[0]
+        # Total counts
+        total_quarantined = (
+            QuarantineModel.select().where(~QuarantineModel.resolved).count()
+        )
 
-            # By error type
-            cursor.execute(
-                """
-                SELECT error_type, COUNT(*) as count
-                FROM quarantine
-                WHERE resolved = 0
-                GROUP BY error_type
-                """
+        total_resolved = (
+            QuarantineModel.select().where(QuarantineModel.resolved).count()
+        )
+
+        # By error type
+        by_error_type_query = (
+            QuarantineModel.select(
+                QuarantineModel.error_type,
+                fn.COUNT(QuarantineModel.uid).alias("count"),
             )
-            by_error_type = {row[0]: row[1] for row in cursor.fetchall()}
+            .where(~QuarantineModel.resolved)
+            .group_by(QuarantineModel.error_type)
+        )
+        by_error_type = {row.error_type: row.count for row in by_error_type_query}
 
-            # High attempt emails
-            cursor.execute(
-                """
-                SELECT COUNT(*) FROM quarantine
-                WHERE attempts >= 3 AND resolved = 0
-                """
-            )
-            high_attempts = cursor.fetchone()[0]
+        # High attempt emails
+        high_attempts = (
+            QuarantineModel.select()
+            .where((QuarantineModel.attempts >= 3) & (~QuarantineModel.resolved))
+            .count()
+        )
 
-            return {
-                "total_quarantined": total_quarantined,
-                "total_resolved": total_resolved,
-                "by_error_type": by_error_type,
-                "high_attempts": high_attempts,
-            }
-        finally:
-            conn.close()
+        return {
+            "total_quarantined": total_quarantined,
+            "total_resolved": total_resolved,
+            "by_error_type": by_error_type,
+            "high_attempts": high_attempts,
+        }
 
 
 class ErrorHandler:

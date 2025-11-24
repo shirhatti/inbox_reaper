@@ -4,18 +4,19 @@ Provides thread-safe storage and retrieval of sender statistics
 with efficient bulk operations and querying capabilities.
 """
 
-import sqlite3
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, cast
 
+from peewee import SqliteDatabase
+
+from inbox_reaper.models import SenderStatsModel
 from inbox_reaper.state import SenderStats
 
 
 class SenderStatsDB:
-    """Thread-safe SQLite database for sender statistics."""
+    """Thread-safe SQLite database for sender statistics using Peewee ORM."""
 
     def __init__(self, db_path: str | Path = "sender_stats.db"):
         """Initialize the database connection.
@@ -25,61 +26,57 @@ class SenderStatsDB:
         """
         self.db_path = Path(db_path)
         self._lock = Lock()
+
+        # Initialize database
+        self.db = SqliteDatabase(
+            str(self.db_path),
+            pragmas={
+                "foreign_keys": 1,
+                "journal_mode": "wal",
+                "synchronous": "normal",
+            },
+        )
+
+        # Bind model to database
+        SenderStatsModel._meta.database = self.db
+
         self._init_db()
+
+    def close(self) -> None:
+        """Close the database connection."""
+        if not self.db.is_closed():
+            self.db.close()
+
+    def __enter__(self) -> "SenderStatsDB":
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
+        """Context manager exit."""
+        self.close()
 
     def _init_db(self) -> None:
         """Create tables and indexes if they don't exist."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
+        with self._lock:
+            self.db.connect(reuse_if_open=True)
+            self.db.create_tables([SenderStatsModel], safe=True)
 
-            # Create sender_stats table
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sender_stats (
-                    sender TEXT PRIMARY KEY,
-                    marketing_count INTEGER NOT NULL DEFAULT 0,
-                    total_count INTEGER NOT NULL DEFAULT 0,
-                    auto_delete INTEGER NOT NULL DEFAULT 0,
-                    last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-            """
-            )
-
-            # Create indexes for performance
-            cursor.execute(
+            # Create partial index for auto_delete if not exists
+            self.db.execute_sql(
                 """
                 CREATE INDEX IF NOT EXISTS idx_auto_delete
                 ON sender_stats(auto_delete)
                 WHERE auto_delete = 1
-            """
+                """
             )
 
-            cursor.execute(
+            # Create index for last_updated if not exists
+            self.db.execute_sql(
                 """
                 CREATE INDEX IF NOT EXISTS idx_last_updated
                 ON sender_stats(last_updated)
-            """
+                """
             )
-
-            conn.commit()
-
-    @contextmanager
-    def _get_connection(self):
-        """Context manager for database connections.
-
-        Ensures proper cleanup and thread safety.
-        """
-        conn = sqlite3.connect(
-            self.db_path,
-            check_same_thread=False,
-            timeout=30.0,
-        )
-        conn.row_factory = sqlite3.Row
-        try:
-            with self._lock:
-                yield conn
-        finally:
-            conn.close()
 
     def load_all_stats(self) -> dict[str, dict[str, Any]]:
         """Load all sender statistics from the database.
@@ -91,24 +88,15 @@ class SenderStatsDB:
             - total_count: int
             - auto_delete: bool
         """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT sender, marketing_count, total_count, auto_delete
-                FROM sender_stats
-            """
-            )
-
+        with self._lock:
             stats = {}
-            for row in cursor.fetchall():
-                stats[row["sender"]] = {
-                    "sender": row["sender"],
-                    "marketing_count": row["marketing_count"],
-                    "total_count": row["total_count"],
-                    "auto_delete": bool(row["auto_delete"]),
+            for sender_model in SenderStatsModel.select():
+                stats[sender_model.sender] = {
+                    "sender": sender_model.sender,
+                    "marketing_count": sender_model.marketing_count,
+                    "total_count": sender_model.total_count,
+                    "auto_delete": bool(sender_model.auto_delete),
                 }
-
             return stats
 
     def save_stats(self, sender_stats: dict[str, dict[str, Any]]) -> None:
@@ -132,30 +120,21 @@ class SenderStatsDB:
         Returns:
             List of sender email addresses
         """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-
+        with self._lock:
             if threshold is not None:
-                cursor.execute(
-                    """
-                    SELECT sender
-                    FROM sender_stats
-                    WHERE marketing_count >= ?
-                    ORDER BY marketing_count DESC
-                """,
-                    (threshold,),
+                query = (
+                    SenderStatsModel.select()
+                    .where(SenderStatsModel.marketing_count >= threshold)
+                    .order_by(SenderStatsModel.marketing_count.desc())
                 )
             else:
-                cursor.execute(
-                    """
-                    SELECT sender
-                    FROM sender_stats
-                    WHERE auto_delete = 1
-                    ORDER BY marketing_count DESC
-                """
+                query = (
+                    SenderStatsModel.select()
+                    .where(SenderStatsModel.auto_delete == 1)
+                    .order_by(SenderStatsModel.marketing_count.desc())
                 )
 
-            return [row["sender"] for row in cursor.fetchall()]
+            return [sender.sender for sender in query]
 
     def update_sender(
         self,
@@ -172,28 +151,22 @@ class SenderStatsDB:
             total_count: Total number of emails from this sender
             auto_delete: Whether to auto-delete emails from this sender
         """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO sender_stats
-                    (sender, marketing_count, total_count, auto_delete, last_updated)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(sender) DO UPDATE SET
-                    marketing_count = excluded.marketing_count,
-                    total_count = excluded.total_count,
-                    auto_delete = excluded.auto_delete,
-                    last_updated = excluded.last_updated
-            """,
-                (
-                    sender,
-                    marketing_count,
-                    total_count,
-                    1 if auto_delete else 0,
-                    datetime.now().isoformat(),
-                ),
-            )
-            conn.commit()
+        with self._lock:
+            SenderStatsModel.insert(
+                sender=sender,
+                marketing_count=marketing_count,
+                total_count=total_count,
+                auto_delete=1 if auto_delete else 0,
+                last_updated=datetime.now(),
+            ).on_conflict(
+                conflict_target=[SenderStatsModel.sender],
+                update={
+                    SenderStatsModel.marketing_count: marketing_count,
+                    SenderStatsModel.total_count: total_count,
+                    SenderStatsModel.auto_delete: 1 if auto_delete else 0,
+                    SenderStatsModel.last_updated: datetime.now(),
+                },
+            ).execute()
 
     def bulk_update(self, stats: dict[str, dict[str, Any]]) -> None:
         """Batch update multiple senders efficiently.
@@ -208,39 +181,37 @@ class SenderStatsDB:
         if not stats:
             return
 
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-
-            # Prepare batch data
-            now = datetime.now().isoformat()
-            batch_data = []
-            for sender, stat_dict in stats.items():
-                batch_data.append(
-                    (
-                        sender,
-                        stat_dict.get("marketing_count", 0),
-                        stat_dict.get("total_count", 0),
-                        1 if stat_dict.get("auto_delete", False) else 0,
-                        now,
+        with self._lock:
+            with self.db.atomic():
+                # Prepare batch data
+                now = datetime.now()
+                batch_data = []
+                for sender, stat_dict in stats.items():
+                    batch_data.append(
+                        {
+                            "sender": sender,
+                            "marketing_count": stat_dict.get("marketing_count", 0),
+                            "total_count": stat_dict.get("total_count", 0),
+                            "auto_delete": 1
+                            if stat_dict.get("auto_delete", False)
+                            else 0,
+                            "last_updated": now,
+                        }
                     )
-                )
 
-            # Execute batch upsert in a single transaction
-            cursor.executemany(
-                """
-                INSERT INTO sender_stats
-                    (sender, marketing_count, total_count, auto_delete, last_updated)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(sender) DO UPDATE SET
-                    marketing_count = excluded.marketing_count,
-                    total_count = excluded.total_count,
-                    auto_delete = excluded.auto_delete,
-                    last_updated = excluded.last_updated
-            """,
-                batch_data,
-            )
-
-            conn.commit()
+                # Insert or update in batches
+                for batch_item in batch_data:
+                    SenderStatsModel.insert(**batch_item).on_conflict(
+                        conflict_target=[SenderStatsModel.sender],
+                        update={
+                            SenderStatsModel.marketing_count: batch_item[
+                                "marketing_count"
+                            ],
+                            SenderStatsModel.total_count: batch_item["total_count"],
+                            SenderStatsModel.auto_delete: batch_item["auto_delete"],
+                            SenderStatsModel.last_updated: batch_item["last_updated"],
+                        },
+                    ).execute()
 
     def get_sender_stats(self, sender: str) -> dict[str, Any] | None:
         """Get statistics for a specific sender.
@@ -251,26 +222,17 @@ class SenderStatsDB:
         Returns:
             Stats dict or None if sender not found
         """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT sender, marketing_count, total_count, auto_delete
-                FROM sender_stats
-                WHERE sender = ?
-            """,
-                (sender,),
-            )
-
-            row = cursor.fetchone()
-            if row:
+        with self._lock:
+            try:
+                sender_model = SenderStatsModel.get(SenderStatsModel.sender == sender)
                 return {
-                    "sender": row["sender"],
-                    "marketing_count": row["marketing_count"],
-                    "total_count": row["total_count"],
-                    "auto_delete": bool(row["auto_delete"]),
+                    "sender": sender_model.sender,
+                    "marketing_count": sender_model.marketing_count,
+                    "total_count": sender_model.total_count,
+                    "auto_delete": bool(sender_model.auto_delete),
                 }
-            return None
+            except SenderStatsModel.DoesNotExist:
+                return None
 
     def delete_sender(self, sender: str) -> bool:
         """Delete a sender's statistics.
@@ -281,11 +243,13 @@ class SenderStatsDB:
         Returns:
             True if sender was deleted, False if not found
         """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM sender_stats WHERE sender = ?", (sender,))
-            conn.commit()
-            return bool(cursor.rowcount > 0)
+        with self._lock:
+            deleted_count = (
+                SenderStatsModel.delete()
+                .where(SenderStatsModel.sender == sender)
+                .execute()
+            )
+            return cast(bool, deleted_count > 0)
 
     def clear_all(self) -> int:
         """Clear all sender statistics.
@@ -293,11 +257,8 @@ class SenderStatsDB:
         Returns:
             Number of rows deleted
         """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM sender_stats")
-            conn.commit()
-            return int(cursor.rowcount)
+        with self._lock:
+            return cast(int, SenderStatsModel.delete().execute())
 
     def get_stats_count(self) -> int:
         """Get total number of senders in the database.
@@ -305,11 +266,8 @@ class SenderStatsDB:
         Returns:
             Total count of sender records
         """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) as count FROM sender_stats")
-            row = cursor.fetchone()
-            return row["count"] if row else 0
+        with self._lock:
+            return cast(int, SenderStatsModel.select().count())
 
     def get_top_senders(
         self, limit: int = 10, by: str = "marketing"
@@ -323,28 +281,23 @@ class SenderStatsDB:
         Returns:
             List of sender stats dicts
         """
-        order_column = "marketing_count" if by == "marketing" else "total_count"
-
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                f"""
-                SELECT sender, marketing_count, total_count, auto_delete
-                FROM sender_stats
-                ORDER BY {order_column} DESC
-                LIMIT ?
-            """,
-                (limit,),
+        with self._lock:
+            order_column = (
+                SenderStatsModel.marketing_count
+                if by == "marketing"
+                else SenderStatsModel.total_count
             )
+
+            query = SenderStatsModel.select().order_by(order_column.desc()).limit(limit)
 
             return [
                 {
-                    "sender": row["sender"],
-                    "marketing_count": row["marketing_count"],
-                    "total_count": row["total_count"],
-                    "auto_delete": bool(row["auto_delete"]),
+                    "sender": sender.sender,
+                    "marketing_count": sender.marketing_count,
+                    "total_count": sender.total_count,
+                    "auto_delete": bool(sender.auto_delete),
                 }
-                for row in cursor.fetchall()
+                for sender in query
             ]
 
     @staticmethod
