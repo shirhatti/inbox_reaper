@@ -48,7 +48,8 @@ def batch_fetch_headers(state: GraphState) -> GraphState:
     # 3. Fetch headers only (BODY.PEEK[HEADER])
     # 4. Parse headers into email_headers dict
 
-    email_headers: dict[str, dict[str, Any]] = {}  # UID -> {uid, subject, sender, date, attachments}
+    # UID -> {uid, subject, sender, date, attachments}
+    email_headers: dict[str, dict[str, Any]] = {}
 
     # Example structure:
     # email_headers = {

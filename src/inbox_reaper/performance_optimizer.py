@@ -521,10 +521,12 @@ class PerformanceOptimizer:
                 )
 
             benchmark_result = self._benchmarks[-1]
-            logger.info(
-                f"IMAP {operation} latency: "
-                f"{benchmark_result.metadata.get('avg_latency', 0) if benchmark_result.metadata else 0:.3f}s avg"
+            avg_latency = (
+                benchmark_result.metadata.get("avg_latency", 0)
+                if benchmark_result.metadata
+                else 0
             )
+            logger.info(f"IMAP {operation} latency: {avg_latency:.3f}s avg")
             return benchmark_result
 
         except Exception as e:
