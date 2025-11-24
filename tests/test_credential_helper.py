@@ -39,6 +39,56 @@ class TestGetCredentials:
         mock_get_password.assert_called_once_with(SERVICE_NAME, "test@example.com")
 
     @patch("inbox_reaper.credential_helper.keyring.get_password")
+    def test_get_credentials_normalizes_unix_timestamp(self, mock_get_password):
+        """Test that Unix timestamp expires_at gets converted to ISO string."""
+        # Setup mock with Unix timestamp (as returned by authlib)
+        raw_creds = {
+            "email": "test@example.com",
+            "provider": "gmail",
+            "access_token": "token123",
+            "refresh_token": "refresh123",
+            "expires_at": 1763965617,  # Unix timestamp
+            "token_type": "Bearer",
+        }
+        mock_get_password.return_value = json.dumps(raw_creds)
+
+        # Test retrieval
+        result = get_credentials("test@example.com")
+
+        # Verify expires_at was converted to ISO string
+        assert isinstance(result["expires_at"], str)
+        assert "T" in result["expires_at"]  # ISO format has T separator
+        # Should be roughly 2025-11-24
+        assert result["expires_at"].startswith("2025")
+
+    @patch("inbox_reaper.credential_helper.keyring.get_password")
+    def test_get_credentials_removes_extra_oauth_fields(self, mock_get_password):
+        """Test that extra OAuth response fields are filtered out."""
+        # Setup mock with extra fields from authlib response
+        raw_creds = {
+            "email": "test@example.com",
+            "provider": "gmail",
+            "access_token": "token123",
+            "refresh_token": "refresh123",
+            "expires_at": "2025-11-24T12:00:00",
+            "token_type": "Bearer",
+            "expires_in": 3599,  # Should be removed
+            "scope": "https://mail.google.com/",  # Should be removed
+        }
+        mock_get_password.return_value = json.dumps(raw_creds)
+
+        # Test retrieval
+        result = get_credentials("test@example.com")
+
+        # Verify extra fields were removed
+        assert "expires_in" not in result
+        assert "scope" not in result
+        # Essential fields should remain
+        assert "email" in result
+        assert "provider" in result
+        assert "access_token" in result
+
+    @patch("inbox_reaper.credential_helper.keyring.get_password")
     def test_get_nonexistent_credentials(self, mock_get_password):
         """Test retrieving credentials that don't exist."""
         # Setup mock to return None
@@ -66,15 +116,19 @@ class TestGetCredentials:
             "refresh_token": "refresh_with_unicode_\u00e9",
             "expires_at": "2025-12-31T23:59:59",
             "token_type": "Bearer",
-            "extra_field": {"nested": "value"},
         }
         mock_get_password.return_value = json.dumps(test_creds)
 
         # Test retrieval
         result = get_credentials("test@example.com")
 
-        # Verify all fields parsed correctly
-        assert result == test_creds
+        # Verify all essential fields parsed correctly
+        assert result["email"] == test_creds["email"]
+        assert result["provider"] == test_creds["provider"]
+        assert result["access_token"] == test_creds["access_token"]
+        assert result["refresh_token"] == test_creds["refresh_token"]
+        assert result["expires_at"] == test_creds["expires_at"]
+        assert result["token_type"] == test_creds["token_type"]
 
 
 class TestStoreCredentials:
@@ -112,8 +166,18 @@ class TestStoreCredentials:
         """Test that storing credentials overwrites existing ones."""
         # Store credentials twice
         email = "test@example.com"
-        creds1 = {"access_token": "old_token"}
-        creds2 = {"access_token": "new_token"}
+        creds1 = {
+            "email": email,
+            "provider": "gmail",
+            "access_token": "old_token",
+            "token_type": "Bearer",
+        }
+        creds2 = {
+            "email": email,
+            "provider": "gmail",
+            "access_token": "new_token",
+            "token_type": "Bearer",
+        }
 
         store_credentials(email, creds1)
         store_credentials(email, creds2)
@@ -124,7 +188,8 @@ class TestStoreCredentials:
         # Verify second call has new credentials
         last_call = mock_set_password.call_args
         stored_json = last_call[0][2]
-        assert json.loads(stored_json) == creds2
+        stored = json.loads(stored_json)
+        assert stored["access_token"] == "new_token"
 
     @patch("inbox_reaper.credential_helper.keyring.set_password")
     def test_store_credentials_handles_special_characters(self, mock_set_password):
@@ -132,14 +197,45 @@ class TestStoreCredentials:
         test_creds = {
             "email": "test+alias@example.com",
             "access_token": "token_with_!@#$%^&*()",
-            "unicode_field": "value_with_émojis_🎉",
+            "provider": "gmail",
+            "token_type": "Bearer",
         }
 
         store_credentials("test+alias@example.com", test_creds)
 
         # Verify JSON encoding handles special characters
         stored_json = mock_set_password.call_args[0][2]
-        assert json.loads(stored_json) == test_creds
+        stored = json.loads(stored_json)
+        assert stored["access_token"] == "token_with_!@#$%^&*()"
+
+    @patch("inbox_reaper.credential_helper.keyring.set_password")
+    def test_store_credentials_normalizes_on_save(self, mock_set_password):
+        """Test that credentials are normalized when stored."""
+        # Credentials with Unix timestamp and extra fields
+        raw_creds = {
+            "email": "test@example.com",
+            "provider": "gmail",
+            "access_token": "token123",
+            "refresh_token": "refresh123",
+            "expires_at": 1763965617,  # Unix timestamp
+            "token_type": "Bearer",
+            "expires_in": 3599,  # Extra field
+            "scope": "https://mail.google.com/",  # Extra field
+        }
+
+        store_credentials("test@example.com", raw_creds)
+
+        # Verify stored credentials are normalized
+        stored_json = mock_set_password.call_args[0][2]
+        stored = json.loads(stored_json)
+
+        # expires_at should be ISO string
+        assert isinstance(stored["expires_at"], str)
+        assert "T" in stored["expires_at"]
+
+        # Extra fields should be removed
+        assert "expires_in" not in stored
+        assert "scope" not in stored
 
 
 class TestEraseCredentials:
