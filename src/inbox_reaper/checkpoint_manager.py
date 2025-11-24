@@ -8,7 +8,7 @@ watermarking.
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import click
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -75,7 +75,7 @@ class CheckpointManager:
         """
         try:
             watermark = WatermarkModel.get(WatermarkModel.id == 1)
-            return watermark.last_processed_uid  # type: ignore[no-any-return]
+            return cast(str | None, watermark.last_processed_uid)
         except WatermarkModel.DoesNotExist:
             return None
 

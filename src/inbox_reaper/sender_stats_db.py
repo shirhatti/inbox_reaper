@@ -7,7 +7,7 @@ with efficient bulk operations and querying capabilities.
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, cast
 
 from peewee import SqliteDatabase
 
@@ -232,7 +232,7 @@ class SenderStatsDB:
                 .where(SenderStatsModel.sender == sender)
                 .execute()
             )
-            return deleted_count > 0  # type: ignore[no-any-return]
+            return cast(bool, deleted_count > 0)
 
     def clear_all(self) -> int:
         """Clear all sender statistics.
@@ -241,7 +241,7 @@ class SenderStatsDB:
             Number of rows deleted
         """
         with self._lock:
-            return SenderStatsModel.delete().execute()  # type: ignore[no-any-return]
+            return cast(int, SenderStatsModel.delete().execute())
 
     def get_stats_count(self) -> int:
         """Get total number of senders in the database.
@@ -250,7 +250,7 @@ class SenderStatsDB:
             Total count of sender records
         """
         with self._lock:
-            return SenderStatsModel.select().count()  # type: ignore[no-any-return]
+            return cast(int, SenderStatsModel.select().count())
 
     def get_top_senders(
         self, limit: int = 10, by: str = "marketing"
