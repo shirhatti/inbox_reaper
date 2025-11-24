@@ -4,6 +4,10 @@ All agents are pure functions: ProcessingState -> ProcessingState
 Each agent processes emails in the current batch and adds decisions.
 """
 
+import html
+import re
+from html.parser import HTMLParser
+
 import ollama
 
 from .state import (
@@ -87,24 +91,94 @@ def check_sender_pattern(
     return None
 
 
-def truncate_symmetric(text: str, max_length: int = 1000) -> str:
+class HTMLTextExtractor(HTMLParser):
+    """Extract plain text from HTML, ignoring tags and scripts."""
+
+    def __init__(self):
+        super().__init__()
+        self.text_parts = []
+        self.skip_content = False
+
+    def handle_starttag(self, tag, attrs):
+        # Skip content in script and style tags
+        if tag.lower() in ("script", "style"):
+            self.skip_content = True
+
+    def handle_endtag(self, tag):
+        if tag.lower() in ("script", "style"):
+            self.skip_content = False
+
+    def handle_data(self, data):
+        if not self.skip_content:
+            self.text_parts.append(data)
+
+    def get_text(self) -> str:
+        return "".join(self.text_parts)
+
+
+def strip_html(text: str) -> str:
+    """Strip HTML tags and extract plain text content.
+
+    Removes HTML tags, scripts, styles, and converts HTML entities to text.
+    Cleans up excessive whitespace while preserving paragraph breaks.
+
+    Args:
+        text: The HTML or plain text to process
+
+    Returns:
+        Plain text with HTML removed and whitespace normalized
+    """
+    # If text doesn't contain HTML tags, return as-is
+    if "<" not in text:
+        return text
+
+    # Parse HTML and extract text
+    extractor = HTMLTextExtractor()
+    try:
+        extractor.feed(text)
+        plain_text = extractor.get_text()
+    except Exception:
+        # If HTML parsing fails, fall back to regex stripping
+        plain_text = re.sub(r"<[^>]+>", "", text)
+
+    # Decode HTML entities (e.g., &nbsp; -> space, &lt; -> <)
+    plain_text = html.unescape(plain_text)
+
+    # Normalize whitespace: replace multiple spaces/tabs with single space
+    plain_text = re.sub(r"[ \t]+", " ", plain_text)
+
+    # Preserve paragraph breaks but remove excessive newlines (more than 2)
+    plain_text = re.sub(r"\n\s*\n\s*\n+", "\n\n", plain_text)
+
+    # Remove leading/trailing whitespace from each line
+    lines = [line.strip() for line in plain_text.split("\n")]
+    plain_text = "\n".join(lines)
+
+    return plain_text.strip()
+
+
+def truncate_symmetric(text: str, max_length: int = 2000) -> str:
     """Truncate text symmetrically, keeping start and end.
 
-    Preserves the beginning and end of the text (which often contains
+    Strips HTML markup first to extract only meaningful text content,
+    then preserves the beginning and end of the text (which often contains
     important footer information like unsubscribe links), removing the
     middle portion if the text exceeds max_length.
 
     Args:
-        text: The text to truncate
-        max_length: Maximum length of the result
+        text: The text to truncate (HTML or plain text)
+        max_length: Maximum length of the result (default: 2000)
 
     Returns:
-        Truncated text with start and end preserved
+        Truncated plain text with start and end preserved
     """
-    if len(text) <= max_length:
-        return text
+    # Strip HTML first to get clean text
+    clean_text = strip_html(text)
 
-    # Reserve 20 chars for the truncation marker
+    if len(clean_text) <= max_length:
+        return clean_text
+
+    # Reserve space for the truncation marker
     marker = "\n\n[... content truncated ...]\n\n"
     available = max_length - len(marker)
 
@@ -112,8 +186,8 @@ def truncate_symmetric(text: str, max_length: int = 1000) -> str:
     start_length = available // 2
     end_length = available - start_length
 
-    start = text[:start_length]
-    end = text[-end_length:]
+    start = clean_text[:start_length]
+    end = clean_text[-end_length:]
 
     return start + marker + end
 
@@ -124,8 +198,8 @@ def classify_with_ai(email: Email, config: Config) -> EmailDecision:
     This is the only non-pure function (has side effect of calling Ollama).
     Returns DELETE decision for marketing, KEEP for everything else.
     """
-    # Truncate body symmetrically to preserve footer info (e.g., unsubscribe links)
-    body_preview = truncate_symmetric(email.body, max_length=1000)
+    # Strip HTML and truncate symmetrically to preserve footer (unsubscribe links, etc.)
+    body_preview = truncate_symmetric(email.body)
 
     prompt = f"""Classify this email as marketing/promotional or important.
 
