@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from .batch_coordinator import BatchCoordinator
 from .imap_client import IMAPClient
@@ -136,7 +137,7 @@ async def process_email_node(state: StreamingState) -> StreamingState:
     return {**state, "operation": decision, "decision": decision, "reason": reason}
 
 
-def build_streaming_graph() -> StateGraph:
+def build_streaming_graph() -> CompiledStateGraph:
     """Build the streaming LangGraph."""
     graph = StateGraph(StreamingState)
 

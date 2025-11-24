@@ -285,7 +285,7 @@ class SenderStatsDB:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM sender_stats WHERE sender = ?", (sender,))
             conn.commit()
-            return cursor.rowcount > 0
+            return bool(cursor.rowcount > 0)
 
     def clear_all(self) -> int:
         """Clear all sender statistics.
@@ -297,7 +297,7 @@ class SenderStatsDB:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM sender_stats")
             conn.commit()
-            return cursor.rowcount
+            return int(cursor.rowcount)
 
     def get_stats_count(self) -> int:
         """Get total number of senders in the database.

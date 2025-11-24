@@ -9,10 +9,11 @@ Graph Structure:
          → aggregate_ai_results → batch_delete → update_checkpoint → END
 """
 
-from typing import Literal
+from typing import Any, Literal, cast
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
 from .langgraph_state import GraphState, create_initial_state
@@ -47,7 +48,7 @@ def batch_fetch_headers(state: GraphState) -> GraphState:
     # 3. Fetch headers only (BODY.PEEK[HEADER])
     # 4. Parse headers into email_headers dict
 
-    email_headers = {}  # UID -> {uid, subject, sender, date, attachments}
+    email_headers: dict[str, dict[str, Any]] = {}  # UID -> {uid, subject, sender, date, attachments}
 
     # Example structure:
     # email_headers = {
@@ -173,7 +174,7 @@ def batch_fetch_bodies(state: GraphState) -> GraphState:
     # 3. Use IMAP pipelining for efficiency (BODY.PEEK[TEXT])
     # 4. Parse and store in email_bodies
 
-    email_bodies = {}  # UID -> complete Email dict with body
+    email_bodies: dict[str, dict[str, Any]] = {}  # UID -> complete Email dict with body
 
     print(f"[batch_fetch_bodies] Fetched {len(email_bodies)} email bodies")
 
@@ -327,7 +328,7 @@ def email_processing_subgraph(state: GraphState) -> GraphState:
 
     return {
         **state,
-        "needs_full_fetch": [current_email_uid],
+        "needs_full_fetch": [cast(str, current_email_uid)],
     }
 
 
@@ -359,7 +360,7 @@ def ai_classification_subgraph(state: GraphState) -> GraphState:
 
 def build_langgraph(
     config: Config, checkpoint_path: str = "checkpoints.db"
-) -> StateGraph:
+) -> CompiledStateGraph:
     """Build the main LangGraph for email classification pipeline.
 
     Args:
@@ -370,51 +371,51 @@ def build_langgraph(
         Compiled LangGraph ready for execution
     """
     # Initialize checkpointer for state persistence
-    checkpointer = SqliteSaver.from_conn_string(checkpoint_path)
+    # Note: SqliteSaver.from_conn_string returns a context manager
+    with SqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
+        # Create the graph
+        graph = StateGraph(GraphState)
 
-    # Create the graph
-    graph = StateGraph(GraphState)
+        # Add main workflow nodes
+        graph.add_node("batch_fetch_headers", batch_fetch_headers)
+        graph.add_node("fan_out_processing", fan_out_processing)
+        graph.add_node("aggregate_results", aggregate_results)
+        graph.add_node("batch_fetch_bodies", batch_fetch_bodies)
+        graph.add_node("fan_out_ai_classification", fan_out_ai_classification)
+        graph.add_node("aggregate_ai_results", aggregate_ai_results)
+        graph.add_node("batch_delete", batch_delete)
+        graph.add_node("update_checkpoint", update_checkpoint)
 
-    # Add main workflow nodes
-    graph.add_node("batch_fetch_headers", batch_fetch_headers)
-    graph.add_node("fan_out_processing", fan_out_processing)
-    graph.add_node("aggregate_results", aggregate_results)
-    graph.add_node("batch_fetch_bodies", batch_fetch_bodies)
-    graph.add_node("fan_out_ai_classification", fan_out_ai_classification)
-    graph.add_node("aggregate_ai_results", aggregate_ai_results)
-    graph.add_node("batch_delete", batch_delete)
-    graph.add_node("update_checkpoint", update_checkpoint)
+        # Add subgraph nodes (these will be called by Send())
+        graph.add_node("email_processing_subgraph", email_processing_subgraph)
+        graph.add_node("ai_classification_subgraph", ai_classification_subgraph)
 
-    # Add subgraph nodes (these will be called by Send())
-    graph.add_node("email_processing_subgraph", email_processing_subgraph)
-    graph.add_node("ai_classification_subgraph", ai_classification_subgraph)
+        # Define main workflow edges
+        graph.add_edge(START, "batch_fetch_headers")
+        graph.add_edge("batch_fetch_headers", "fan_out_processing")
+        graph.add_edge("fan_out_processing", "aggregate_results")
 
-    # Define main workflow edges
-    graph.add_edge(START, "batch_fetch_headers")
-    graph.add_edge("batch_fetch_headers", "fan_out_processing")
-    graph.add_edge("fan_out_processing", "aggregate_results")
+        # Conditional edge: fetch bodies only if needed for AI
+        graph.add_conditional_edges(
+            "aggregate_results",
+            should_fetch_bodies,
+            {
+                "fetch_bodies": "batch_fetch_bodies",
+                "skip_bodies": "batch_delete",
+            },
+        )
 
-    # Conditional edge: fetch bodies only if needed for AI
-    graph.add_conditional_edges(
-        "aggregate_results",
-        should_fetch_bodies,
-        {
-            "fetch_bodies": "batch_fetch_bodies",
-            "skip_bodies": "batch_delete",
-        },
-    )
+        graph.add_edge("batch_fetch_bodies", "fan_out_ai_classification")
+        graph.add_edge("fan_out_ai_classification", "aggregate_ai_results")
+        graph.add_edge("aggregate_ai_results", "batch_delete")
+        graph.add_edge("batch_delete", "update_checkpoint")
+        graph.add_edge("update_checkpoint", END)
 
-    graph.add_edge("batch_fetch_bodies", "fan_out_ai_classification")
-    graph.add_edge("fan_out_ai_classification", "aggregate_ai_results")
-    graph.add_edge("aggregate_ai_results", "batch_delete")
-    graph.add_edge("batch_delete", "update_checkpoint")
-    graph.add_edge("update_checkpoint", END)
+        # Compile graph with checkpointer
+        compiled_graph = graph.compile(checkpointer=checkpointer)
 
-    # Compile graph with checkpointer
-    compiled_graph = graph.compile(checkpointer=checkpointer)
-
-    print("[build_langgraph] LangGraph compiled successfully")
-    return compiled_graph
+        print("[build_langgraph] LangGraph compiled successfully")
+        return compiled_graph
 
 
 def run_langgraph_pipeline(config: Config, checkpoint_path: str = "checkpoints.db"):

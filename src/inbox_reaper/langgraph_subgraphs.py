@@ -9,6 +9,7 @@ processing while maintaining thread-safe state updates via reducers.
 """
 
 import asyncio
+from typing import Callable, cast
 
 import ollama
 
@@ -51,7 +52,7 @@ def check_attachments_node(state: GraphState) -> GraphState:
         return state
 
     # Convert dict to Email model
-    email = email_dict_to_model(current_email_dict)
+    email = email_dict_to_model(cast(dict, current_email_dict))
 
     # Get config
     config = Config(**state["config"])
@@ -108,7 +109,7 @@ def check_keywords_node(state: GraphState) -> GraphState:
         return state
 
     # Convert dict to Email model
-    email = email_dict_to_model(current_email_dict)
+    email = email_dict_to_model(cast(dict, current_email_dict))
 
     # Get config
     config = Config(**state["config"])
@@ -165,7 +166,7 @@ def check_whitelist_node(state: GraphState) -> GraphState:
         return state
 
     # Convert dict to Email model
-    email = email_dict_to_model(current_email_dict)
+    email = email_dict_to_model(cast(dict, current_email_dict))
 
     # Get config
     config = Config(**state["config"])
@@ -222,7 +223,7 @@ def check_sender_pattern_node(state: GraphState) -> GraphState:
         return state
 
     # Convert dict to Email model
-    email = email_dict_to_model(current_email_dict)
+    email = email_dict_to_model(cast(dict, current_email_dict))
 
     # Get config
     config = Config(**state["config"])
@@ -293,7 +294,7 @@ def final_decision_node(state: GraphState) -> GraphState:
         return state
 
     # Convert dict to Email model
-    email = email_dict_to_model(current_email_dict)
+    email = email_dict_to_model(cast(dict, current_email_dict))
 
     # Get config
     Config(**state["config"])
@@ -317,7 +318,7 @@ def final_decision_node(state: GraphState) -> GraphState:
 
     return {
         **state,
-        "needs_full_fetch": [current_email_uid],
+        "needs_full_fetch": [cast(str, current_email_uid)],
         "sender_stats": sender_stats_update,
         "processed_uids": {email.uid},
     }
@@ -406,7 +407,7 @@ def ai_classification_node(state: GraphState) -> GraphState:
         return state
 
     # Convert dict to Email model
-    email = email_dict_to_model(current_email_dict)
+    email = email_dict_to_model(cast(dict, current_email_dict))
 
     # Get config
     config = Config(**state["config"])
@@ -443,7 +444,7 @@ def ai_classification_node(state: GraphState) -> GraphState:
     elif decision.decision == Decision.KEEP:
         state_update["total_kept"] = state.get("total_kept", 0) + 1
 
-    return state_update
+    return cast(GraphState, state_update)
 
 
 def ai_final_decision_node(state: GraphState) -> GraphState:
@@ -506,7 +507,7 @@ def _create_sender_stats_update(
 # ============================================================================
 
 
-def create_email_processing_subgraph_nodes() -> dict[str, callable]:
+def create_email_processing_subgraph_nodes() -> dict[str, Callable]:
     """Get node mapping for email processing subgraph.
 
     Returns:
@@ -521,7 +522,7 @@ def create_email_processing_subgraph_nodes() -> dict[str, callable]:
     }
 
 
-def create_ai_classification_subgraph_nodes() -> dict[str, callable]:
+def create_ai_classification_subgraph_nodes() -> dict[str, Callable]:
     """Get node mapping for AI classification subgraph.
 
     Returns:

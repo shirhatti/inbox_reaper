@@ -295,7 +295,7 @@ class PerformanceOptimizer:
             Current memory usage in megabytes
         """
         process = psutil.Process(os.getpid())
-        return process.memory_info().rss / 1024 / 1024
+        return float(process.memory_info().rss / 1024 / 1024)
 
     def _get_cpu_count(self) -> int:
         """Get number of CPU cores.
@@ -311,7 +311,7 @@ class PerformanceOptimizer:
         Returns:
             Available memory in megabytes
         """
-        return psutil.virtual_memory().available / 1024 / 1024
+        return float(psutil.virtual_memory().available / 1024 / 1024)
 
     def measure_memory_usage(self) -> float:
         """Track memory usage delta since initialization.
@@ -322,7 +322,7 @@ class PerformanceOptimizer:
         current = self._get_memory_usage()
         delta = current - self._start_memory
         logger.debug(f"Memory delta: {delta:.2f} MB")
-        return delta
+        return float(delta)
 
     @contextmanager
     def measure_operation(self, operation: str):
@@ -520,12 +520,12 @@ class PerformanceOptimizer:
                     total_duration / sample_count if sample_count > 0 else 0
                 )
 
-            result = self._benchmarks[-1]
+            benchmark_result = self._benchmarks[-1]
             logger.info(
                 f"IMAP {operation} latency: "
-                f"{result.metadata.get('avg_latency', 0):.3f}s avg"
+                f"{benchmark_result.metadata.get('avg_latency', 0) if benchmark_result.metadata else 0:.3f}s avg"
             )
-            return result
+            return benchmark_result
 
         except Exception as e:
             logger.error(f"Error benchmarking IMAP: {e}")

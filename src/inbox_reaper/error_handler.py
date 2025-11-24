@@ -685,8 +685,10 @@ class ErrorHandler:
         # Try batch processing first
         try:
             logger.info(f"Processing batch of {len(emails)} emails")
-            results = process_fn(emails)
-            return results, []
+            results = process_fn(emails)  # type: ignore[arg-type]
+            # Ensure results is a list for return type
+            results_list = results if isinstance(results, list) else [results]
+            return results_list, []
         except Exception as batch_error:
             logger.warning(
                 f"Batch processing failed: {batch_error}. "
