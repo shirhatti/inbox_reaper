@@ -13,9 +13,9 @@ OAUTH_CONFIGS = {
         "redirect_uri": "http://127.0.0.1:9004",  # Thunderbird uses various ports
     },
     "outlook": {
-        "client_id": "08162f7c-0fd2-4200-a84a-f25a4db0b584",  # Thunderbird's Azure app
-        "auth_uri": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-        "token_uri": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        "client_id": "9e5f94bc-e8a4-4e73-b8be-63364c29d753",  # Thunderbird's Azure app (updated)
+        "auth_uri": "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
+        "token_uri": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
         "scope": "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access",  # noqa: E501
         "redirect_uri": "http://localhost:9004",
     },
