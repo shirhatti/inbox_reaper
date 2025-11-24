@@ -1,0 +1,40 @@
+{
+  "_comment": "Example configuration file for inbox-reaper (JSON format)",
+  "_comment2": "Copy this file to config.json and customize for your needs",
+
+  "model_name": "gemma3:4b",
+  "ollama_base_url": "http://localhost:11434",
+  "concurrent_ai_limit": 25,
+
+  "email": "user@example.com",
+
+  "fetch_size": 100,
+  "batch_size": 50,
+  "max_emails": null,
+
+  "auto_delete_threshold": 5,
+
+  "keywords": [
+    "important",
+    "urgent",
+    "action required"
+  ],
+
+  "whitelist_domains": [
+    "example.com",
+    "important-company.com"
+  ],
+
+  "important_extensions": [
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xlsx",
+    ".pptx"
+  ],
+
+  "enable_pipelining": true,
+  "enable_sender_tracking": true,
+
+  "dry_run": true
+}

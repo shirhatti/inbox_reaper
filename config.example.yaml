@@ -1,0 +1,71 @@
+# Example configuration file for inbox-reaper
+# This file demonstrates all available configuration options
+# Copy this file to config.yaml and customize for your needs
+
+# AI Settings
+# -----------
+# Model name for Ollama AI classification
+model_name: gemma3:4b
+
+# Base URL for Ollama service
+ollama_base_url: http://localhost:11434
+
+# Maximum concurrent AI classification requests
+concurrent_ai_limit: 25
+
+# Email Settings
+# --------------
+# Email address to process (required)
+email: user@example.com
+
+# IMAP Settings
+# -------------
+# Number of emails to fetch in each IMAP request
+fetch_size: 100
+
+# Number of emails to process in each batch
+batch_size: 50
+
+# Maximum number of emails to process (null = no limit)
+# Useful for testing with a smaller subset
+max_emails: null
+
+# Decision Thresholds
+# -------------------
+# Number of marketing emails from a sender before auto-deleting
+auto_delete_threshold: 5
+
+# Keywords & Whitelist
+# --------------------
+# Critical keywords that trigger KEEP decision
+keywords:
+  - important
+  - urgent
+  - action required
+
+# Whitelisted domains that always trigger KEEP
+whitelist_domains:
+  - example.com
+  - important-company.com
+
+# File extensions considered important (emails with these attachments are kept)
+important_extensions:
+  - .pdf
+  - .doc
+  - .docx
+  - .xlsx
+  - .pptx
+
+# Performance Settings
+# --------------------
+# Enable pipelining for faster processing
+enable_pipelining: true
+
+# Enable sender tracking for auto-delete decisions
+enable_sender_tracking: true
+
+# Safety Settings
+# ---------------
+# Dry run mode: when true, no emails are actually deleted
+# IMPORTANT: Always test with dry_run: true first!
+dry_run: true
