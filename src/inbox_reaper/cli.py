@@ -49,12 +49,7 @@ def cli():
 @click.option(
     "--model",
     default=None,
-    help="Ollama model name for AI classification",
-)
-@click.option(
-    "--ollama-url",
-    default=None,
-    help="Ollama base URL",
+    help="MLX model name for AI classification (Hugging Face model ID)",
 )
 @click.option(
     "--batch-size",
@@ -108,7 +103,6 @@ def cli():
 def process(
     config: str | None,
     model: str | None,
-    ollama_url: str | None,
     batch_size: int | None,
     concurrent_limit: int | None,
     dry_run: bool | None,
@@ -129,7 +123,7 @@ def process(
         inbox-reaper process --email user@example.com --keywords "important"
         inbox-reaper process --email user@example.com --max-emails 10
     """
-    click.echo("Inbox Reaper - Email Classification System (LangGraph)")
+    click.echo("Inbox Reaper - Email Classification System (MLX)")
     click.echo("=" * 60)
 
     # Load configuration from file if provided
@@ -146,7 +140,6 @@ def process(
     cli_args = {
         "email": email,
         "model_name": model,
-        "ollama_base_url": ollama_url,
         "batch_size": batch_size,
         "concurrent_ai_limit": concurrent_limit,
         "dry_run": dry_run,
@@ -171,8 +164,7 @@ def process(
         raise click.Abort() from e
 
     click.echo("\nConfiguration:")
-    click.echo(f"  Model: {config_obj.model_name}")
-    click.echo(f"  Ollama URL: {config_obj.ollama_base_url}")
+    click.echo(f"  MLX Model: {config_obj.model_name}")
     click.echo(f"  Batch size: {config_obj.batch_size}")
     click.echo(f"  Concurrent limit: {config_obj.concurrent_ai_limit}")
     click.echo(f"  Dry run: {config_obj.dry_run}")
@@ -208,6 +200,47 @@ def version():
     """Display version information."""
     click.echo("Inbox Reaper v0.1.0")
     click.echo("Email classification and cleaning system")
+
+
+@cli.command()
+@click.option(
+    "--model",
+    default="mlx-community/Llama-3.2-3B-Instruct-4bit",
+    help="MLX model name to download (Hugging Face model ID)",
+    show_default=True,
+)
+def download_model(model: str):
+    """Download and cache MLX model for offline use.
+
+    This command pre-fetches the specified MLX model to the local cache.
+    Useful for CI/CD environments or preparing for offline use.
+
+    The model will be downloaded to ~/.cache/huggingface/hub/ and can be
+    used by subsequent runs of 'inbox-reaper process'.
+
+    Example:
+        inbox-reaper download-model
+        inbox-reaper download-model --model mlx-community/Llama-3.2-1B-Instruct-4bit
+    """
+    from .mlx_backend import download_model as download_mlx_model
+
+    click.echo("Inbox Reaper - Model Download")
+    click.echo("=" * 60)
+    click.echo(f"\nModel: {model}")
+    click.echo("\nThis will download the model to your local cache.")
+    click.echo("The first download may take several minutes.\n")
+
+    success = download_mlx_model(model)
+
+    if success:
+        click.echo("\n" + "=" * 60)
+        click.echo("✓ Model ready for use!")
+        click.echo("=" * 60)
+    else:
+        click.echo("\n" + "=" * 60)
+        click.echo("✗ Model download failed", err=True)
+        click.echo("=" * 60)
+        raise click.ClickException("Model download failed")
 
 
 @cli.command()

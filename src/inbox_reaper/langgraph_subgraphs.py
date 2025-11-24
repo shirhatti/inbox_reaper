@@ -12,8 +12,6 @@ import asyncio
 from collections.abc import Callable
 from typing import cast
 
-import ollama
-
 from .agents import (
     check_attachments,
     check_keywords,
@@ -21,6 +19,7 @@ from .agents import (
     check_whitelist,
     truncate_symmetric,
 )
+from .mlx_backend import generate_text_async
 from .langgraph_state import GraphState, email_dict_to_model, sender_stats_dict_to_model
 from .state import (
     Config,
@@ -331,10 +330,10 @@ def final_decision_node(state: GraphState) -> GraphState:
 
 
 async def classify_with_ai_async(email: Email, config: Config) -> EmailDecision:
-    """Classify email using Ollama LLM with async support.
+    """Classify email using MLX LLM with async support.
 
     Async version of classify_with_ai from agents.py.
-    Uses Ollama AsyncClient for parallel processing.
+    Uses MLX async interface for parallel processing.
 
     Args:
         email: Email to classify
@@ -358,15 +357,14 @@ Answer only YES or NO.
 Answer:"""
 
     try:
-        # Use async Ollama client
-        client = ollama.AsyncClient(host=config.ollama_base_url)
-
-        response = await client.chat(
-            model=config.model_name,
-            messages=[{"role": "user", "content": prompt}],
+        # Use async MLX inference
+        response = await generate_text_async(
+            model_name=config.model_name,
+            prompt=prompt,
+            max_tokens=10,  # Just need "YES" or "NO"
         )
 
-        answer = response["message"]["content"].strip().upper()
+        answer = response.strip().upper()
 
         if "YES" in answer:
             decision = Decision.DELETE
@@ -392,7 +390,7 @@ Answer:"""
 
 
 def ai_classification_node(state: GraphState) -> GraphState:
-    """Node: Classify email using AI (Ollama).
+    """Node: Classify email using AI (MLX).
 
     Ported from ai_classifier_agent in agents.py with async support.
     Runs AI classification for emails that passed deterministic filters.

@@ -8,8 +8,7 @@ import html
 import re
 from html.parser import HTMLParser
 
-import ollama
-
+from .mlx_backend import generate_text
 from .state import (
     Config,
     Decision,
@@ -193,9 +192,9 @@ def truncate_symmetric(text: str, max_length: int = 2000) -> str:
 
 
 def classify_with_ai(email: Email, config: Config) -> EmailDecision:
-    """Classify email using Ollama LLM.
+    """Classify email using MLX LLM.
 
-    This is the only non-pure function (has side effect of calling Ollama).
+    This is the only non-pure function (has side effect of calling MLX).
     Returns DELETE decision for marketing, KEEP for everything else.
     """
     # Strip HTML and truncate symmetrically to preserve footer (unsubscribe links, etc.)
@@ -213,13 +212,14 @@ Answer only YES or NO.
 Answer:"""
 
     try:
-        client = ollama.Client(host=config.ollama_base_url)
-        response = client.chat(
-            model=config.model_name,
-            messages=[{"role": "user", "content": prompt}],
+        # Use MLX for inference
+        response = generate_text(
+            model_name=config.model_name,
+            prompt=prompt,
+            max_tokens=10,  # Just need "YES" or "NO"
         )
 
-        answer = response["message"]["content"].strip().upper()
+        answer = response.strip().upper()
 
         if "YES" in answer:
             decision = Decision.DELETE
@@ -237,7 +237,7 @@ Answer:"""
         # On error, default to KEEP (safe default)
         import logging
 
-        logging.getLogger(__name__).error(f"Ollama classification failed: {e}")
+        logging.getLogger(__name__).error(f"MLX classification failed: {e}")
         return EmailDecision(
             email=email,
             decision=Decision.KEEP,
