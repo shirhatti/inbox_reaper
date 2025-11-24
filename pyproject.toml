@@ -35,6 +35,7 @@ dev = [
     "types-psutil>=5.9.0",
     "types-PyYAML>=6.0.0",
     "types-requests>=2.31.0",
+    "types-peewee>=3.17.0",
 ]
 
 [project.scripts]
@@ -80,6 +81,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "yaml"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "peewee"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

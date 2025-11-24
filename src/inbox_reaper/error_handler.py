@@ -259,7 +259,7 @@ class QuarantineManager:
 
         # Initialize database
         self.db = SqliteDatabase(str(self.quarantine_path))
-        QuarantineModel._meta.database = self.db
+        QuarantineModel._meta.database = self.db  # type: ignore[attr-defined]
 
         self._init_database()
 
@@ -309,7 +309,7 @@ class QuarantineManager:
             logger.warning(
                 f"Updated quarantine for UID {uid} (attempt {attempts}): {error}"
             )
-        except QuarantineModel.DoesNotExist:
+        except QuarantineModel.DoesNotExist:  # type: ignore[attr-defined]
             # Insert new quarantine record
             QuarantineModel.create(
                 uid=uid,
@@ -399,13 +399,13 @@ class QuarantineManager:
         # Total counts
         total_quarantined = (
             QuarantineModel.select()
-            .where(QuarantineModel.resolved == False)
+            .where(~QuarantineModel.resolved)
             .count()
         )
 
         total_resolved = (
             QuarantineModel.select()
-            .where(QuarantineModel.resolved == True)
+            .where(QuarantineModel.resolved)
             .count()
         )
 
@@ -415,7 +415,7 @@ class QuarantineManager:
                 QuarantineModel.error_type,
                 fn.COUNT(QuarantineModel.uid).alias("count"),
             )
-            .where(QuarantineModel.resolved == False)
+            .where(~QuarantineModel.resolved)
             .group_by(QuarantineModel.error_type)
         )
         by_error_type = {row.error_type: row.count for row in by_error_type_query}
@@ -423,9 +423,7 @@ class QuarantineManager:
         # High attempt emails
         high_attempts = (
             QuarantineModel.select()
-            .where(
-                (QuarantineModel.attempts >= 3) & (QuarantineModel.resolved == False)
-            )
+            .where((QuarantineModel.attempts >= 3) & (~QuarantineModel.resolved))
             .count()
         )
 

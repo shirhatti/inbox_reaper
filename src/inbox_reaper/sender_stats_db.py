@@ -38,7 +38,7 @@ class SenderStatsDB:
         )
 
         # Bind model to database
-        SenderStatsModel._meta.database = self.db
+        SenderStatsModel._meta.database = self.db  # type: ignore[attr-defined]
 
         self._init_db()
 
@@ -187,7 +187,9 @@ class SenderStatsDB:
                     SenderStatsModel.insert(**batch_item).on_conflict(
                         conflict_target=[SenderStatsModel.sender],
                         update={
-                            SenderStatsModel.marketing_count: batch_item["marketing_count"],
+                            SenderStatsModel.marketing_count: batch_item[
+                                "marketing_count"
+                            ],
                             SenderStatsModel.total_count: batch_item["total_count"],
                             SenderStatsModel.auto_delete: batch_item["auto_delete"],
                             SenderStatsModel.last_updated: batch_item["last_updated"],
@@ -206,13 +208,13 @@ class SenderStatsDB:
         with self._lock:
             try:
                 sender_model = SenderStatsModel.get(SenderStatsModel.sender == sender)
-                return {
+                return {  # type: ignore[return-value]
                     "sender": sender_model.sender,
                     "marketing_count": sender_model.marketing_count,
                     "total_count": sender_model.total_count,
                     "auto_delete": bool(sender_model.auto_delete),
                 }
-            except SenderStatsModel.DoesNotExist:
+            except SenderStatsModel.DoesNotExist:  # type: ignore[attr-defined]
                 return None
 
     def delete_sender(self, sender: str) -> bool:
@@ -230,7 +232,7 @@ class SenderStatsDB:
                 .where(SenderStatsModel.sender == sender)
                 .execute()
             )
-            return deleted_count > 0
+            return deleted_count > 0  # type: ignore[no-any-return]
 
     def clear_all(self) -> int:
         """Clear all sender statistics.
@@ -239,7 +241,7 @@ class SenderStatsDB:
             Number of rows deleted
         """
         with self._lock:
-            return SenderStatsModel.delete().execute()
+            return SenderStatsModel.delete().execute()  # type: ignore[no-any-return]
 
     def get_stats_count(self) -> int:
         """Get total number of senders in the database.
@@ -248,7 +250,7 @@ class SenderStatsDB:
             Total count of sender records
         """
         with self._lock:
-            return SenderStatsModel.select().count()
+            return SenderStatsModel.select().count()  # type: ignore[no-any-return]
 
     def get_top_senders(
         self, limit: int = 10, by: str = "marketing"
