@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import click
 
 from . import credential_helper
+from .config_loader import load_config_file, merge_config_with_cli_args
 from .oauth_config import detect_provider
 from .oauth_flow import (
     perform_oauth_flow,
@@ -41,36 +42,36 @@ def cli():
 
 @cli.command()
 @click.option(
+    "--config",
+    type=click.Path(exists=True),
+    help="Path to configuration file (YAML or JSON)",
+)
+@click.option(
     "--model",
-    default="gemma3:4b",
+    default=None,
     help="Ollama model name for AI classification",
-    show_default=True,
 )
 @click.option(
     "--ollama-url",
-    default="http://localhost:11434",
+    default=None,
     help="Ollama base URL",
-    show_default=True,
 )
 @click.option(
     "--batch-size",
-    default=50,
+    default=None,
     type=int,
     help="Number of emails to process in each batch",
-    show_default=True,
 )
 @click.option(
     "--concurrent-limit",
-    default=25,
+    default=None,
     type=int,
     help="Maximum concurrent AI classification requests",
-    show_default=True,
 )
 @click.option(
     "--dry-run/--no-dry-run",
-    default=True,
+    default=None,
     help="Enable dry-run mode (no actual deletions)",
-    show_default=True,
 )
 @click.option(
     "--checkpoint-path",
@@ -87,7 +88,6 @@ def cli():
 )
 @click.option(
     "--email",
-    required=True,
     help="Email address to process",
 )
 @click.option(
@@ -106,14 +106,15 @@ def cli():
     help="Whitelisted domains to trigger KEEP (can specify multiple times)",
 )
 def process(
-    model: str,
-    ollama_url: str,
-    batch_size: int,
-    concurrent_limit: int,
-    dry_run: bool,
+    config: str | None,
+    model: str | None,
+    ollama_url: str | None,
+    batch_size: int | None,
+    concurrent_limit: int | None,
+    dry_run: bool | None,
     checkpoint_path: str,
     resume: bool,
-    email: str,
+    email: str | None,
     max_emails: int | None,
     keywords: tuple,
     whitelist_domain: tuple,
@@ -124,34 +125,60 @@ def process(
     orchestration, with support for checkpointing and resumable processing.
 
     Example:
+        inbox-reaper process --config config.yaml
         inbox-reaper process --email user@example.com --keywords "important"
         inbox-reaper process --email user@example.com --max-emails 10
     """
     click.echo("Inbox Reaper - Email Classification System (LangGraph)")
     click.echo("=" * 60)
 
-    # Create configuration
-    config = Config(
-        email=email,
-        model_name=model,
-        ollama_base_url=ollama_url,
-        batch_size=batch_size,
-        concurrent_ai_limit=concurrent_limit,
-        dry_run=dry_run,
-        max_emails=max_emails,
-        keywords=list(keywords),
-        whitelist_domains=list(whitelist_domain),
-    )
+    # Load configuration from file if provided
+    file_config = {}
+    if config:
+        try:
+            click.echo(f"Loading configuration from: {config}")
+            file_config = load_config_file(config)
+        except Exception as e:
+            click.echo(f"Error loading config file: {e}", err=True)
+            raise click.Abort() from e
+
+    # Prepare CLI arguments
+    cli_args = {
+        "email": email,
+        "model_name": model,
+        "ollama_base_url": ollama_url,
+        "batch_size": batch_size,
+        "concurrent_ai_limit": concurrent_limit,
+        "dry_run": dry_run,
+        "max_emails": max_emails,
+        "keywords": list(keywords) if keywords else None,
+        "whitelist_domains": list(whitelist_domain) if whitelist_domain else None,
+    }
+
+    # Merge configurations (CLI args take precedence)
+    merged_config = merge_config_with_cli_args(file_config, cli_args)
+
+    # Validate required fields
+    if not merged_config.get("email"):
+        click.echo("Error: --email is required (or must be in config file)", err=True)
+        raise click.Abort()
+
+    # Create configuration object
+    try:
+        config_obj = Config(**merged_config)
+    except Exception as e:
+        click.echo(f"Error creating configuration: {e}", err=True)
+        raise click.Abort() from e
 
     click.echo("\nConfiguration:")
-    click.echo(f"  Model: {config.model_name}")
-    click.echo(f"  Ollama URL: {config.ollama_base_url}")
-    click.echo(f"  Batch size: {config.batch_size}")
-    click.echo(f"  Concurrent limit: {config.concurrent_ai_limit}")
-    click.echo(f"  Dry run: {config.dry_run}")
+    click.echo(f"  Model: {config_obj.model_name}")
+    click.echo(f"  Ollama URL: {config_obj.ollama_base_url}")
+    click.echo(f"  Batch size: {config_obj.batch_size}")
+    click.echo(f"  Concurrent limit: {config_obj.concurrent_ai_limit}")
+    click.echo(f"  Dry run: {config_obj.dry_run}")
     click.echo(f"  Checkpoint: {checkpoint_path}")
-    click.echo(f"  Keywords: {config.keywords or 'None'}")
-    click.echo(f"  Whitelisted domains: {config.whitelist_domains or 'None'}")
+    click.echo(f"  Keywords: {config_obj.keywords or 'None'}")
+    click.echo(f"  Whitelisted domains: {config_obj.whitelist_domains or 'None'}")
 
     # Run the LangGraph pipeline
     try:
@@ -162,7 +189,7 @@ def process(
 
         from .langgraph_streaming import run_streaming_pipeline
 
-        asyncio.run(run_streaming_pipeline(config))
+        asyncio.run(run_streaming_pipeline(config_obj))
 
         click.echo("\n" + "=" * 60)
         click.echo("Processing Complete!")
