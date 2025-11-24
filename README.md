@@ -34,9 +34,6 @@ The agent pipeline is defined in `dag.py`:
 
 ```bash
 # Install dependencies
-pip install -e .
-
-# Or with uv
 uv pip install -e .
 ```
 
@@ -120,9 +117,6 @@ print(f"Deleted: {state.total_deleted}")
 
 ```bash
 # Install development dependencies
-pip install -e ".[dev]"
-
-# Or with uv
 uv pip install -e ".[dev]"
 
 # Install pre-commit hooks
