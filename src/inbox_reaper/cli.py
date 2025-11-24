@@ -293,16 +293,22 @@ def test(email: str):
 
     # Check if token expired and refresh if needed
     try:
-        expires = datetime.fromisoformat(creds.get("expires_at", ""))
-        if expires < datetime.now():
-            click.echo("Token expired, refreshing...")
-            tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
-            creds["access_token"] = tokens["access_token"]
-            creds["expires_at"] = (
-                datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
-            ).isoformat()
-            credential_helper.store_credentials(email, creds)
-            click.echo("✓ Token refreshed successfully")
+        expires_at_str = creds.get("expires_at")
+        if expires_at_str and isinstance(expires_at_str, str):
+            expires = datetime.fromisoformat(expires_at_str)
+            if expires < datetime.now():
+                click.echo("Token expired, refreshing...")
+                tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
+                creds["access_token"] = tokens["access_token"]
+                creds["expires_at"] = (
+                    datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
+                ).isoformat()
+                credential_helper.store_credentials(email, creds)
+                click.echo("✓ Token refreshed successfully")
+        else:
+            click.echo(
+                "Warning: Token expiration time missing or invalid", err=True
+            )
     except Exception as e:
         click.echo(f"Warning: Could not refresh token: {e}", err=True)
 
