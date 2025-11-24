@@ -116,8 +116,32 @@ print(f"Deleted: {state.total_deleted}")
 
 ## Development
 
+### Setup
+
 ```bash
-# Format code
+# Install development dependencies
+pip install -e ".[dev]"
+
+# Or with uv
+uv pip install -e ".[dev]"
+
+# Install pre-commit hooks
+pre-commit install
+```
+
+### Code Quality
+
+```bash
+# Run all pre-commit hooks
+pre-commit run --all-files
+
+# Lint with ruff
+ruff check src/
+
+# Format with ruff
+ruff format src/
+
+# Format with black
 black src/
 
 # Type checking
@@ -126,6 +150,8 @@ mypy src/
 # Run tests
 pytest
 ```
+
+Pre-commit hooks will automatically run ruff, black, and mypy on staged files before each commit.
 
 ## License
 

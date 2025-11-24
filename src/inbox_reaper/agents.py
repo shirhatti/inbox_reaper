@@ -4,8 +4,6 @@ All agents are pure functions: ProcessingState -> ProcessingState
 Each agent processes emails in the current batch and adds decisions.
 """
 
-from typing import Optional
-
 import ollama
 
 from .state import (
@@ -19,7 +17,7 @@ from .state import (
 )
 
 
-def check_attachments(email: Email, config: Config) -> Optional[EmailDecision]:
+def check_attachments(email: Email, config: Config) -> EmailDecision | None:
     """Check if email has important attachments.
 
     Pure function that returns a KEEP decision if important attachments found.
@@ -36,7 +34,7 @@ def check_attachments(email: Email, config: Config) -> Optional[EmailDecision]:
     return None
 
 
-def check_keywords(email: Email, config: Config) -> Optional[EmailDecision]:
+def check_keywords(email: Email, config: Config) -> EmailDecision | None:
     """Check if email contains critical keywords.
 
     Pure function that returns a KEEP decision if keywords found.
@@ -53,7 +51,7 @@ def check_keywords(email: Email, config: Config) -> Optional[EmailDecision]:
     return None
 
 
-def check_whitelist(email: Email, config: Config) -> Optional[EmailDecision]:
+def check_whitelist(email: Email, config: Config) -> EmailDecision | None:
     """Check if email is from whitelisted domain.
 
     Pure function that returns a KEEP decision if sender is whitelisted.
@@ -74,7 +72,7 @@ def check_whitelist(email: Email, config: Config) -> Optional[EmailDecision]:
 
 def check_sender_pattern(
     email: Email, sender_stats: SenderStats, config: Config
-) -> Optional[EmailDecision]:
+) -> EmailDecision | None:
     """Check if sender should be auto-deleted based on history.
 
     Pure function that returns a DELETE decision if sender has pattern of marketing.
@@ -129,7 +127,7 @@ Answer:"""
             confidence=0.8,
         )
 
-    except Exception as e:
+    except Exception:
         # On error, default to KEEP (safe default)
         return EmailDecision(
             email=email,
@@ -266,7 +264,7 @@ def log_progress_agent(state: ProcessingState) -> ProcessingState:
 
     Pure function (logging is read-only side effect).
     """
-    print(f"\n=== Batch Progress ===")
+    print("\n=== Batch Progress ===")
     print(f"Emails in batch: {len(state.emails)}")
     print(f"Decisions made: {len(state.decisions)}")
     print(f"Total processed: {state.total_processed}")
@@ -275,7 +273,7 @@ def log_progress_agent(state: ProcessingState) -> ProcessingState:
     print(f"Consecutive empty batches: {state.consecutive_empty_batches}")
 
     if state.decisions:
-        print(f"\n=== Decision Breakdown ===")
+        print("\n=== Decision Breakdown ===")
         reason_counts = {}
         for d in state.decisions:
             reason_counts[d.reason.value] = reason_counts.get(d.reason.value, 0) + 1
