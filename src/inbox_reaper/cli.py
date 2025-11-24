@@ -4,7 +4,6 @@ Provides a Click-based command-line interface for the email classification syste
 """
 
 from datetime import datetime
-from typing import List, Optional
 
 import click
 from google import genai
@@ -72,7 +71,7 @@ def cli():
 @click.option(
     "--whitelist-domain",
     multiple=True,
-    help="Whitelisted domains to trigger KEEP decision (can be specified multiple times)",
+    help="Whitelisted domains to trigger KEEP (can specify multiple times)",
 )
 def process(
     model: str,
@@ -106,16 +105,14 @@ def process(
         whitelist_domains=list(whitelist_domain),
     )
 
-    click.echo(f"\n📋 Configuration:")
+    click.echo("\n📋 Configuration:")
     click.echo(f"  Model: {config.model_name}")
     click.echo(f"  Ollama URL: {config.ollama_base_url}")
     click.echo(f"  Batch size: {config.batch_size}")
     click.echo(f"  Concurrent limit: {config.concurrent_ai_limit}")
     click.echo(f"  Dry run: {config.dry_run}")
     click.echo(f"  Keywords: {config.keywords or 'None'}")
-    click.echo(
-        f"  Whitelisted domains: {config.whitelist_domains or 'None'}"
-    )
+    click.echo(f"  Whitelisted domains: {config.whitelist_domains or 'None'}")
 
     # Create mock emails for demonstration
     mock_emails = create_mock_emails()
@@ -123,9 +120,7 @@ def process(
     click.echo(f"\n📧 Processing {len(mock_emails)} mock emails...")
 
     # Create initial state
-    initial_state = ProcessingState(
-        config=config, emails=mock_emails
-    )
+    initial_state = ProcessingState(config=config, emails=mock_emails)
 
     # Run the pipeline
     if use_adk:
@@ -136,9 +131,7 @@ def process(
             client = genai.Client()
             final_state = run_pipeline_with_adk(initial_state, client)
         except Exception as e:
-            click.echo(
-                f"\n⚠️  ADK initialization failed: {e}", err=True
-            )
+            click.echo(f"\n⚠️  ADK initialization failed: {e}", err=True)
             click.echo("   Falling back to simple pipeline...\n")
             final_state = run_pipeline(initial_state)
     else:
@@ -150,7 +143,7 @@ def process(
     click.echo("✅ Processing Complete!")
     click.echo("=" * 60)
 
-    click.echo(f"\n📊 Final Statistics:")
+    click.echo("\n📊 Final Statistics:")
     click.echo(f"  Total processed: {final_state.total_processed}")
     click.echo(f"  Total kept: {final_state.total_kept}")
     click.echo(f"  Total deleted: {final_state.total_deleted}")
@@ -162,7 +155,7 @@ def process(
 
     # Display decisions
     if final_state.decisions:
-        click.echo(f"\n📝 Decisions:")
+        click.echo("\n📝 Decisions:")
         for i, decision in enumerate(final_state.decisions, 1):
             emoji = "🗑️ " if decision.decision.value == "delete" else "📬"
             click.echo(
@@ -172,7 +165,7 @@ def process(
             )
 
 
-def create_mock_emails() -> List[Email]:
+def create_mock_emails() -> list[Email]:
     """Create mock emails for demonstration purposes.
 
     In production, this would be replaced with actual IMAP fetching.

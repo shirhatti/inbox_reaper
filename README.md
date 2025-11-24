@@ -34,9 +34,6 @@ The agent pipeline is defined in `dag.py`:
 
 ```bash
 # Install dependencies
-pip install -e .
-
-# Or with uv
 uv pip install -e .
 ```
 
@@ -116,16 +113,49 @@ print(f"Deleted: {state.total_deleted}")
 
 ## Development
 
+### Quick Setup (Recommended)
+
 ```bash
-# Format code
-black src/
-
-# Type checking
-mypy src/
-
-# Run tests
-pytest
+# Install dependencies and set up pre-commit hooks automatically
+uv pip install -e ".[dev]"
+uv run setup-dev
 ```
+
+This will:
+- Install all development dependencies
+- Set up pre-commit hooks (runs ruff, black, mypy automatically)
+- Verify your environment is ready
+
+### Manual Setup
+
+```bash
+# Install development dependencies
+uv pip install -e ".[dev]"
+
+# Install pre-commit hooks manually
+uv run pre-commit install
+```
+
+### Code Quality
+
+**Pre-commit hooks run automatically on every commit!** They check:
+- Ruff linting and formatting
+- Black formatting
+- Mypy type checking
+
+```bash
+# Run pre-commit hooks manually on all files
+uv run pre-commit run --all-files
+
+# Individual tool commands (optional)
+ruff check src/          # Lint
+ruff format src/         # Format
+black src/               # Additional formatting
+mypy src/                # Type check
+pytest                   # Run tests
+```
+
+**Important**: If pre-commit hooks pass locally, CI will pass. Always run `setup-dev` to ensure hooks are installed.
 
 ## License
 

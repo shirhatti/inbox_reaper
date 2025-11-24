@@ -5,7 +5,7 @@ The workflow is a directed acyclic graph where each node is an agent function
 that transforms the ProcessingState.
 """
 
-from typing import Callable
+from collections.abc import Callable
 
 from google import genai
 from google.genai import types
@@ -20,7 +20,6 @@ from .agents import (
     whitelist_filter_agent,
 )
 from .state import ProcessingState
-
 
 # Define the agent workflow as a sequence of transformations
 # Each agent is a pure function: ProcessingState -> ProcessingState
@@ -71,9 +70,7 @@ def build_dag(client: genai.Client) -> genai.Agent:
         Configured agent that can process email batches
     """
     # Create function declarations for each agent
-    agent_functions = [
-        create_agent_function(name, fn) for name, fn in AGENT_PIPELINE
-    ]
+    agent_functions = [create_agent_function(name, fn) for name, fn in AGENT_PIPELINE]
 
     # Create the root agent
     # Note: For initial scaffold, we're using a simple sequential flow
@@ -82,7 +79,7 @@ def build_dag(client: genai.Client) -> genai.Agent:
         model="gemini-2.0-flash-exp",
         config=types.AgentConfig(
             name="email_classifier",
-            description="Email classification agent with hybrid deterministic + AI pipeline",
+            description="Email classifier with hybrid deterministic + AI pipeline",
             instruction="""You are an email classification agent.
 
 Process emails through a multi-layer decision pipeline:

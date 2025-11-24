@@ -4,10 +4,8 @@ All state is encapsulated in immutable Pydantic models to enable
 pure functional programming patterns.
 """
 
-from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Set
 
 from pydantic import BaseModel, Field
 
@@ -39,7 +37,7 @@ class Email(BaseModel):
     sender: str
     body: str
     date: datetime
-    attachments: List[str] = Field(default_factory=list)
+    attachments: list[str] = Field(default_factory=list)
 
     class Config:
         frozen = True
@@ -90,9 +88,9 @@ class Config(BaseModel):
     auto_delete_threshold: int = 5
 
     # Keywords & whitelist
-    keywords: List[str] = Field(default_factory=list)
-    whitelist_domains: List[str] = Field(default_factory=list)
-    important_extensions: List[str] = Field(
+    keywords: list[str] = Field(default_factory=list)
+    whitelist_domains: list[str] = Field(default_factory=list)
+    important_extensions: list[str] = Field(
         default_factory=lambda: [".pdf", ".doc", ".docx"]
     )
 
@@ -118,18 +116,18 @@ class ProcessingState(BaseModel):
     config: Config
 
     # Current batch being processed
-    emails: List[Email] = Field(default_factory=list)
+    emails: list[Email] = Field(default_factory=list)
 
     # Decisions made for current batch
-    decisions: List[EmailDecision] = Field(default_factory=list)
+    decisions: list[EmailDecision] = Field(default_factory=list)
 
     # Historical data (for resume and sender tracking)
-    processed_uids: Set[str] = Field(default_factory=set)
-    sender_stats: Dict[str, SenderStats] = Field(default_factory=dict)
+    processed_uids: set[str] = Field(default_factory=set)
+    sender_stats: dict[str, SenderStats] = Field(default_factory=dict)
 
     # Pagination/windowing
-    min_uid: Optional[str] = None
-    max_uid: Optional[str] = None
+    min_uid: str | None = None
+    max_uid: str | None = None
 
     # Progress tracking
     total_processed: int = 0
@@ -138,7 +136,7 @@ class ProcessingState(BaseModel):
     consecutive_empty_batches: int = 0
 
     # Error handling
-    errors: List[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
     class Config:
         frozen = True
@@ -150,9 +148,7 @@ class ProcessingState(BaseModel):
 
         # Update sender stats
         sender = decision.email.sender
-        current_stats = self.sender_stats.get(
-            sender, SenderStats(sender=sender)
-        )
+        current_stats = self.sender_stats.get(sender, SenderStats(sender=sender))
 
         new_sender_stats = self.sender_stats.copy()
         new_sender_stats[sender] = SenderStats(
@@ -160,10 +156,11 @@ class ProcessingState(BaseModel):
             total_count=current_stats.total_count + 1,
             marketing_count=current_stats.marketing_count
             + (1 if decision.decision == Decision.DELETE else 0),
-            auto_delete=current_stats.marketing_count + 1
-            >= self.config.auto_delete_threshold
-            if decision.decision == Decision.DELETE
-            else current_stats.auto_delete,
+            auto_delete=(
+                current_stats.marketing_count + 1 >= self.config.auto_delete_threshold
+                if decision.decision == Decision.DELETE
+                else current_stats.auto_delete
+            ),
         )
 
         return self.model_copy(
@@ -183,14 +180,11 @@ class ProcessingState(BaseModel):
         """Pure function to add an error."""
         return self.model_copy(update={"errors": self.errors + [error]})
 
-    def update_batch(self, emails: List[Email]) -> "ProcessingState":
+    def update_batch(self, emails: list[Email]) -> "ProcessingState":
         """Pure function to update current batch and pagination."""
         if not emails:
             return self.model_copy(
-                update={
-                    "consecutive_empty_batches": self.consecutive_empty_batches
-                    + 1
-                }
+                update={"consecutive_empty_batches": self.consecutive_empty_batches + 1}
             )
 
         uids = [email.uid for email in emails]
