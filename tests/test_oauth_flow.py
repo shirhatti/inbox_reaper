@@ -1,10 +1,12 @@
 """Tests for OAuth authentication flow."""
 
 import base64
-from unittest.mock import Mock, patch
+import time
+from unittest.mock import Mock, call, patch
 
 from inbox_reaper.oauth_flow import (
     generate_xoauth2_string,
+    perform_oauth_flow,
     refresh_access_token,
     verify_imap_connection,
 )
@@ -50,6 +52,227 @@ class TestGenerateXOAuth2String:
         result2 = generate_xoauth2_string(email, "token2")
 
         assert result1 != result2
+
+
+class TestPerformOAuthFlow:
+    """Tests for device code OAuth flow."""
+
+    @patch("inbox_reaper.oauth_flow.time.sleep")
+    @patch("inbox_reaper.oauth_flow.requests.post")
+    @patch("inbox_reaper.oauth_flow.get_oauth_config")
+    def test_successful_device_flow(self, mock_get_config, mock_post, mock_sleep):
+        """Test successful device code flow."""
+        # Setup mock config
+        mock_get_config.return_value = {
+            "client_id": "test_client_id",
+            "device_code_uri": "https://oauth.example.com/device/code",
+            "token_uri": "https://oauth.example.com/token",
+            "scope": "test_scope",
+        }
+
+        # Mock device code response
+        device_response = Mock()
+        device_response.json.return_value = {
+            "device_code": "test_device_code",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://example.com/device",
+            "interval": 1,
+            "expires_in": 900,
+        }
+
+        # Mock token responses (first pending, then success)
+        pending_response = Mock()
+        pending_response.json.return_value = {"error": "authorization_pending"}
+
+        success_response = Mock()
+        success_response.json.return_value = {
+            "access_token": "test_access_token",
+            "refresh_token": "test_refresh_token",
+            "expires_in": 3600,
+        }
+
+        # Set up post to return different responses
+        mock_post.side_effect = [device_response, pending_response, success_response]
+
+        # Run the flow
+        result = perform_oauth_flow("test@example.com", "outlook")
+
+        # Verify result
+        assert result["access_token"] == "test_access_token"
+        assert result["refresh_token"] == "test_refresh_token"
+
+        # Verify calls
+        assert mock_post.call_count == 3
+        # First call: device code request
+        assert mock_post.call_args_list[0] == call(
+            "https://oauth.example.com/device/code",
+            data={"client_id": "test_client_id", "scope": "test_scope"},
+        )
+        # Second call: first token poll (pending)
+        assert mock_post.call_args_list[1] == call(
+            "https://oauth.example.com/token",
+            data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "client_id": "test_client_id",
+                "device_code": "test_device_code",
+            },
+        )
+
+    @patch("inbox_reaper.oauth_flow.time.sleep")
+    @patch("inbox_reaper.oauth_flow.requests.post")
+    @patch("inbox_reaper.oauth_flow.get_oauth_config")
+    def test_device_flow_with_client_secret(
+        self, mock_get_config, mock_post, mock_sleep
+    ):
+        """Test device flow includes client_secret when available (Gmail)."""
+        # Setup mock config with client_secret
+        mock_get_config.return_value = {
+            "client_id": "test_client_id",
+            "client_secret": "test_secret",
+            "device_code_uri": "https://oauth.example.com/device/code",
+            "token_uri": "https://oauth.example.com/token",
+            "scope": "test_scope",
+        }
+
+        # Mock responses
+        device_response = Mock()
+        device_response.json.return_value = {
+            "device_code": "test_device_code",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://example.com/device",
+            "interval": 1,
+            "expires_in": 900,
+        }
+
+        success_response = Mock()
+        success_response.json.return_value = {"access_token": "test_token"}
+
+        mock_post.side_effect = [device_response, success_response]
+
+        # Run the flow
+        perform_oauth_flow("test@gmail.com", "gmail")
+
+        # Verify token request includes client_secret
+        token_call = mock_post.call_args_list[1]
+        assert token_call[1]["data"]["client_secret"] == "test_secret"
+
+    @patch("inbox_reaper.oauth_flow.time.time")
+    @patch("inbox_reaper.oauth_flow.time.sleep")
+    @patch("inbox_reaper.oauth_flow.requests.post")
+    @patch("inbox_reaper.oauth_flow.get_oauth_config")
+    def test_device_flow_expiration(
+        self, mock_get_config, mock_post, mock_sleep, mock_time
+    ):
+        """Test device code flow handles expiration."""
+        # Setup mock config
+        mock_get_config.return_value = {
+            "client_id": "test_client_id",
+            "device_code_uri": "https://oauth.example.com/device/code",
+            "token_uri": "https://oauth.example.com/token",
+            "scope": "test_scope",
+        }
+
+        # Mock device code response with short expiration
+        device_response = Mock()
+        device_response.json.return_value = {
+            "device_code": "test_device_code",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://example.com/device",
+            "interval": 1,
+            "expires_in": 10,  # 10 seconds
+        }
+
+        # Mock time to simulate expiration
+        mock_time.side_effect = [0, 15]  # Start at 0, then jump to 15 seconds
+
+        mock_post.return_value = device_response
+
+        # Test that expiration raises error
+        try:
+            perform_oauth_flow("test@example.com", "outlook")
+            assert False, "Should have raised RuntimeError"
+        except RuntimeError as e:
+            assert "expired" in str(e).lower()
+
+    @patch("inbox_reaper.oauth_flow.time.sleep")
+    @patch("inbox_reaper.oauth_flow.requests.post")
+    @patch("inbox_reaper.oauth_flow.get_oauth_config")
+    def test_device_flow_user_declined(self, mock_get_config, mock_post, mock_sleep):
+        """Test device flow handles user declining authorization."""
+        # Setup mock config
+        mock_get_config.return_value = {
+            "client_id": "test_client_id",
+            "device_code_uri": "https://oauth.example.com/device/code",
+            "token_uri": "https://oauth.example.com/token",
+            "scope": "test_scope",
+        }
+
+        # Mock responses
+        device_response = Mock()
+        device_response.json.return_value = {
+            "device_code": "test_device_code",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://example.com/device",
+            "interval": 1,
+            "expires_in": 900,
+        }
+
+        declined_response = Mock()
+        declined_response.json.return_value = {"error": "authorization_declined"}
+
+        mock_post.side_effect = [device_response, declined_response]
+
+        # Test that decline raises error
+        try:
+            perform_oauth_flow("test@example.com", "outlook")
+            assert False, "Should have raised RuntimeError"
+        except RuntimeError as e:
+            assert "declined" in str(e).lower()
+
+    @patch("inbox_reaper.oauth_flow.time.sleep")
+    @patch("inbox_reaper.oauth_flow.requests.post")
+    @patch("inbox_reaper.oauth_flow.get_oauth_config")
+    def test_device_flow_slow_down(self, mock_get_config, mock_post, mock_sleep):
+        """Test device flow handles slow_down error by increasing interval."""
+        # Setup mock config
+        mock_get_config.return_value = {
+            "client_id": "test_client_id",
+            "device_code_uri": "https://oauth.example.com/device/code",
+            "token_uri": "https://oauth.example.com/token",
+            "scope": "test_scope",
+        }
+
+        # Mock responses
+        device_response = Mock()
+        device_response.json.return_value = {
+            "device_code": "test_device_code",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://example.com/device",
+            "interval": 5,
+            "expires_in": 900,
+        }
+
+        slow_down_response = Mock()
+        slow_down_response.json.return_value = {"error": "slow_down"}
+
+        success_response = Mock()
+        success_response.json.return_value = {"access_token": "test_token"}
+
+        mock_post.side_effect = [
+            device_response,
+            slow_down_response,
+            success_response,
+        ]
+
+        # Run the flow
+        result = perform_oauth_flow("test@example.com", "outlook")
+
+        # Verify success
+        assert result["access_token"] == "test_token"
+
+        # Verify sleep was called with increased interval (5 initial + 5 added = 10)
+        assert mock_sleep.call_count == 2
+        assert mock_sleep.call_args_list[1][0][0] == 10
 
 
 class TestVerifyImapConnection:
@@ -203,10 +426,10 @@ class TestVerifyImapConnection:
 class TestRefreshAccessToken:
     """Tests for token refresh functionality."""
 
-    @patch("inbox_reaper.oauth_flow.OAuth2Session")
+    @patch("inbox_reaper.oauth_flow.requests.post")
     @patch("inbox_reaper.oauth_flow.get_oauth_config")
-    def test_successful_token_refresh(self, mock_get_config, mock_session_class):
-        """Test successful token refresh."""
+    def test_successful_token_refresh_with_secret(self, mock_get_config, mock_post):
+        """Test successful token refresh with client secret (Gmail)."""
         # Setup mock config
         mock_get_config.return_value = {
             "client_id": "test_client_id",
@@ -214,16 +437,16 @@ class TestRefreshAccessToken:
             "token_uri": "https://oauth.example.com/token",
         }
 
-        # Setup mock session
-        mock_session = Mock()
-        mock_session_class.return_value = mock_session
+        # Setup mock response
         expected_tokens = {
             "access_token": "new_access_token",
             "refresh_token": "new_refresh_token",
             "expires_in": 3600,
             "token_type": "Bearer",
         }
-        mock_session.refresh_token.return_value = expected_tokens
+        mock_response = Mock()
+        mock_response.json.return_value = expected_tokens
+        mock_post.return_value = mock_response
 
         # Test token refresh
         result = refresh_access_token("old_refresh_token", "gmail")
@@ -231,41 +454,68 @@ class TestRefreshAccessToken:
         # Verify result
         assert result == expected_tokens
 
-        # Verify session creation
-        mock_session_class.assert_called_once_with(
-            client_id="test_client_id",
-            client_secret="test_secret",
-            token={"refresh_token": "old_refresh_token"},
+        # Verify POST request
+        mock_post.assert_called_once_with(
+            "https://oauth.example.com/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": "test_client_id",
+                "refresh_token": "old_refresh_token",
+                "client_secret": "test_secret",
+            },
         )
+        mock_response.raise_for_status.assert_called_once()
 
-        # Verify refresh call
-        mock_session.refresh_token.assert_called_once_with(
-            "https://oauth.example.com/token", refresh_token="old_refresh_token"
-        )
-
-    @patch("inbox_reaper.oauth_flow.OAuth2Session")
+    @patch("inbox_reaper.oauth_flow.requests.post")
     @patch("inbox_reaper.oauth_flow.get_oauth_config")
-    def test_token_refresh_without_client_secret(
-        self, mock_get_config, mock_session_class
-    ):
-        """Test token refresh for provider without client secret (public client)."""
+    def test_token_refresh_without_client_secret(self, mock_get_config, mock_post):
+        """Test token refresh for provider without client secret (Outlook)."""
         # Setup mock config without client_secret
         mock_get_config.return_value = {
             "client_id": "test_client_id",
             "token_uri": "https://oauth.example.com/token",
         }
 
-        # Setup mock session
-        mock_session = Mock()
-        mock_session_class.return_value = mock_session
-        mock_session.refresh_token.return_value = {"access_token": "new_token"}
+        # Setup mock response
+        expected_tokens = {"access_token": "new_token", "expires_in": 3600}
+        mock_response = Mock()
+        mock_response.json.return_value = expected_tokens
+        mock_post.return_value = mock_response
 
         # Test token refresh
-        refresh_access_token("refresh_token", "outlook")
+        result = refresh_access_token("refresh_token", "outlook")
 
-        # Verify session created with None for client_secret
-        mock_session_class.assert_called_once_with(
-            client_id="test_client_id",
-            client_secret=None,
-            token={"refresh_token": "refresh_token"},
+        # Verify result
+        assert result == expected_tokens
+
+        # Verify POST request doesn't include client_secret
+        mock_post.assert_called_once_with(
+            "https://oauth.example.com/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": "test_client_id",
+                "refresh_token": "refresh_token",
+            },
         )
+
+    @patch("inbox_reaper.oauth_flow.requests.post")
+    @patch("inbox_reaper.oauth_flow.get_oauth_config")
+    def test_token_refresh_http_error(self, mock_get_config, mock_post):
+        """Test token refresh handles HTTP errors."""
+        # Setup mock config
+        mock_get_config.return_value = {
+            "client_id": "test_client_id",
+            "token_uri": "https://oauth.example.com/token",
+        }
+
+        # Setup mock to raise HTTP error
+        mock_response = Mock()
+        mock_response.raise_for_status.side_effect = Exception("401 Unauthorized")
+        mock_post.return_value = mock_response
+
+        # Test that exception is raised
+        try:
+            refresh_access_token("invalid_token", "gmail")
+            assert False, "Should have raised exception"
+        except Exception as e:
+            assert "401 Unauthorized" in str(e)
