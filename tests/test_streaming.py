@@ -12,10 +12,7 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
         mock_client = MagicMock()
         mock_imap_client_cls.return_value = mock_client
 
-        # Mock get_latest_uid
-        mock_client.get_latest_uid.return_value = 2
-
-        # Mock search_uids
+        # Mock search_uids to return all UIDs
         mock_client.search_uids.return_value = ["1", "2"]
 
         # Mock fetch_headers
@@ -43,8 +40,8 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
         mock_client.connect.assert_called()
         mock_client.disconnect.assert_called()
 
-        # Should search and fetch
-        mock_client.get_latest_uid.assert_called()
+        # Should search with ALL criteria
+        mock_client.search_uids.assert_called_with(criteria="ALL")
         mock_client.search_uids.assert_called()
         mock_client.fetch_headers.assert_called()
 
@@ -64,10 +61,7 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
         mock_client = MagicMock()
         mock_imap_client_cls.return_value = mock_client
 
-        # Mock get_latest_uid
-        mock_client.get_latest_uid.return_value = 2
-
-        # Mock search_uids
+        # Mock search_uids to return all UIDs
         mock_client.search_uids.return_value = ["1", "2"]
 
         # Mock fetch_headers
@@ -111,19 +105,10 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
         mock_client = MagicMock()
         mock_imap_client_cls.return_value = mock_client
 
-        # Mock get_latest_uid
-        mock_client.get_latest_uid.return_value = 100
-
-        # Mock search_uids to return UIDs in range
-        def side_effect_search(criteria):
-            # criteria is "min:max"
-            start, end = map(int, criteria.split(":"))
-            # Return UIDs in this range (simulate some gaps)
-            return [
-                str(i) for i in range(start, end + 1) if i % 2 == 0
-            ]  # Even UIDs only
-
-        mock_client.search_uids.side_effect = side_effect_search
+        # Mock search_uids to return all UIDs (simulating 100 emails)
+        # Return even UIDs from 2 to 100
+        all_uids = [str(i) for i in range(2, 101, 2)]  # 2, 4, 6, ..., 100
+        mock_client.search_uids.return_value = all_uids
 
         # Mock fetch_headers
         def side_effect_fetch(uids):
@@ -151,15 +136,10 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
         # Run pipeline
         await run_streaming_pipeline(config)
 
-        # Verify get_latest_uid called
-        mock_client.get_latest_uid.assert_called_once()
+        # Verify search_uids called with ALL
+        mock_client.search_uids.assert_called_with(criteria="ALL")
 
-        # Verify search_uids called with range "91:100" (since fetch_size=10)
-        # Max UID is 100. First chunk is 91-100.
-        mock_client.search_uids.assert_called_with(criteria="91:100")
-
-        # Verify fetch_headers called with 3 newest even UIDs
-        # in range 91-100: 100, 98, 96
+        # Verify fetch_headers called with 3 newest UIDs: 100, 98, 96
         mock_client.fetch_headers.assert_called_once()
         call_args = mock_client.fetch_headers.call_args[1]
         self.assertEqual(call_args["uids"], ["100", "98", "96"])
