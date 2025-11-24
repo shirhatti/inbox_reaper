@@ -36,6 +36,10 @@ class AIClassificationResponse(BaseModel):
     )
 
 
+# Cache the JSON schema at module level (generated once, reused for all classifications)
+_AI_CLASSIFICATION_SCHEMA = AIClassificationResponse.model_json_schema()
+
+
 def check_attachments(email: Email, config: Config) -> EmailDecision | None:
     """Check if email has important attachments.
 
@@ -227,15 +231,12 @@ Analyze whether this is a marketing/promotional email that can be safely deleted
 Provide your classification and a confidence score (0.0 to 1.0) for how certain you are."""
 
     try:
-        # Get JSON schema from Pydantic model
-        json_schema = AIClassificationResponse.model_json_schema()
-
         # Use MLX for inference with JSON schema enforcement
         response = generate_text(
             model_name=config.model_name,
             prompt=prompt,
             max_tokens=50,  # Enough for JSON response
-            json_schema=json_schema,
+            json_schema=_AI_CLASSIFICATION_SCHEMA,
         )
 
         # Parse JSON response

@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import cast
 
 from .agents import (
+    _AI_CLASSIFICATION_SCHEMA,
     AIClassificationResponse,
     check_attachments,
     check_keywords,
@@ -358,15 +359,12 @@ Analyze whether this is a marketing/promotional email that can be safely deleted
 Provide your classification and a confidence score (0.0 to 1.0) for how certain you are."""
 
     try:
-        # Get JSON schema from Pydantic model
-        json_schema = AIClassificationResponse.model_json_schema()
-
         # Use async MLX inference with JSON schema enforcement
         response = await generate_text_async(
             model_name=config.model_name,
             prompt=prompt,
             max_tokens=50,  # Enough for JSON response
-            json_schema=json_schema,
+            json_schema=_AI_CLASSIFICATION_SCHEMA,
         )
 
         # Parse JSON response
