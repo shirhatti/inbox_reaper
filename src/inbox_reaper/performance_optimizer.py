@@ -282,7 +282,7 @@ class PerformanceOptimizer:
         report = optimizer.generate_report(config)
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize performance optimizer."""
         self._benchmarks: list[BenchmarkResult] = []
         self._start_memory = self._get_memory_usage()
