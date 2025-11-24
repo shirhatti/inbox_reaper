@@ -97,7 +97,8 @@ def perform_oauth_flow(email: str, provider: str) -> dict:
             elif error == "expired_token":
                 raise RuntimeError("Device code expired")
             else:
-                raise RuntimeError(f"OAuth error: {error} - {token_json.get('error_description', '')}")
+                error_desc = token_json.get("error_description", "")
+                raise RuntimeError(f"OAuth error: {error} - {error_desc}")
 
         # Success! We have tokens
         if "access_token" in token_json:
