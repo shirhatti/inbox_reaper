@@ -94,10 +94,10 @@ def perform_oauth_flow(email: str, provider: str) -> dict:
     # Create OAuth2Session with PKCE support
     session = OAuth2Session(
         client_id=config["client_id"],
+        client_secret=config.get("client_secret"),  # None for public clients
         redirect_uri=config["redirect_uri"],
         scope=config["scope"],
         code_challenge_method="S256",  # Use SHA256 for PKCE
-        token_endpoint_auth_method="none",  # Public client - no client secret
     )
 
     # Generate PKCE code verifier
@@ -170,8 +170,8 @@ def refresh_access_token(refresh_token: str, provider: str) -> dict:
     # Create OAuth2Session for token refresh
     session = OAuth2Session(
         client_id=config["client_id"],
+        client_secret=config.get("client_secret"),  # None for public clients
         token={"refresh_token": refresh_token},
-        token_endpoint_auth_method="none",  # Public client - no client secret
     )
 
     # Refresh the token
