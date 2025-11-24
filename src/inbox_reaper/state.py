@@ -74,10 +74,9 @@ class Config(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    # AI settings
+    # AI settings (MLX)
     concurrent_ai_limit: int = 25
-    model_name: str = "gemma3:4b"
-    ollama_base_url: str = "http://localhost:11434"
+    model_name: str = "mlx-community/Llama-3.2-3B-Instruct-4bit"
 
     # Email settings
     email: str = ""

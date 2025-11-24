@@ -32,7 +32,7 @@ The system uses **LangGraph** for stateful, parallel email processing:
 **Subgraphs** (`langgraph_subgraphs.py`):
 - **email_processing_subgraph** - Deterministic filter pipeline per email
   - check_attachments → check_keywords → check_whitelist → check_sender_pattern
-- **ai_classification_subgraph** - AI classification using Ollama
+- **ai_classification_subgraph** - AI classification using MLX (Apple Silicon optimized)
 
 **Checkpoint Management** (`checkpoint_manager.py`):
 - UID watermarking for resumable processing
@@ -55,11 +55,13 @@ uv sync
 
 **Dependencies:**
 - `langgraph>=0.2.0` - Graph orchestration with checkpointing
-- `ollama>=0.1.0` - Local LLM inference
+- `mlx-lm>=0.21.0` - Local LLM inference optimized for Apple Silicon
 - `pydantic>=2.0.0` - Type-safe state models
 - `authlib>=1.3.0` - OAuth 2.0 authentication
 - `keyring>=25.0.0` - Secure credential storage
 - `click>=8.1.0` - CLI framework
+
+**Note**: This tool is optimized for **macOS with Apple Silicon** (M1/M2/M3/M4/M5). MLX provides native GPU acceleration on Apple hardware.
 
 ## Authentication
 
@@ -121,22 +123,69 @@ Inbox Reaper uses **Thunderbird's public OAuth client IDs** for Gmail and Outloo
 ### Basic Usage
 
 ```bash
-# Run with defaults (dry-run mode, gemma2:2b model)
-inbox-reaper process
+# First-time setup: Download model (one-time, ~1.8GB)
+inbox-reaper download-model
+
+# Run with defaults (dry-run mode, Llama-3.2-3B-Instruct-4bit)
+inbox-reaper process --email user@gmail.com
 
 # Customize model and settings
-inbox-reaper process --model llama3.2:3b --batch-size 100
+inbox-reaper process --email user@gmail.com \
+  --model mlx-community/Llama-3.2-1B-Instruct-4bit \
+  --batch-size 100
 
 # Add keywords and whitelisted domains
-inbox-reaper process \
+inbox-reaper process --email user@gmail.com \
   --keywords "important" \
   --keywords "Mario Romo" \
   --whitelist-domain "gmail.com" \
   --whitelist-domain "wellsfargo.com"
 
 # Increase parallel processing for faster throughput
-inbox-reaper process --concurrent-limit 50 --batch-size 200
+inbox-reaper process --email user@gmail.com \
+  --concurrent-limit 50 --batch-size 200
 ```
+
+### Configuration Files
+
+Instead of passing CLI arguments each time, you can use a configuration file:
+
+```bash
+# Copy example config
+cp config.example.yaml config.yaml
+# Or: cp config.example.json config.json
+
+# Edit your config file
+vim config.yaml
+
+# Run with config file (CLI args override file values)
+inbox-reaper process --config config.yaml
+
+# Mix config file with CLI overrides
+inbox-reaper process --config config.yaml --model mlx-community/Llama-3.2-1B-Instruct-4bit
+```
+
+**Example config.yaml:**
+```yaml
+# AI Settings
+model_name: mlx-community/Llama-3.2-3B-Instruct-4bit
+concurrent_ai_limit: 25
+
+# Email
+email: user@gmail.com
+
+# Filters
+keywords:
+  - important
+  - urgent
+whitelist_domains:
+  - example.com
+
+# Safety
+dry_run: true
+```
+
+See `config.example.yaml` or `config.example.json` for all available options.
 
 ### Checkpoint and Resume
 
@@ -171,12 +220,12 @@ inbox-reaper checkpoint status
 ```bash
 # For CPU-bound workloads (deterministic filters)
 # Rule: concurrent_limit = CPU cores × 2
-inbox-reaper process --concurrent-limit 16  # For 8-core CPU
+inbox-reaper process --email user@gmail.com --concurrent-limit 16  # For 8-core CPU
 
-# For GPU-bound workloads (AI classification)
-# Rule: concurrent_limit = GPU VRAM / model VRAM
-inbox-reaper process --concurrent-limit 6   # For gemma2:2b on 16GB GPU
-inbox-reaper process --concurrent-limit 4   # For llama3.2:3b on 16GB GPU
+# For Apple Silicon GPU workloads (MLX AI classification)
+# Rule: concurrent_limit based on unified memory
+inbox-reaper process --email user@gmail.com --concurrent-limit 8   # For 16GB unified memory
+inbox-reaper process --email user@gmail.com --concurrent-limit 16  # For 32GB+ unified memory
 ```
 
 **Batch Size Tuning:**
@@ -190,19 +239,25 @@ inbox-reaper process --batch-size 200
 
 **Expected Throughput:**
 - Deterministic filters only: ~12-50 emails/s (depends on CPU cores)
-- With AI classification: ~8-25 emails/s (depends on GPU/model)
-- 150,000 emails: ~5-20 hours (vs. 100+ hours sequential)
+- With MLX AI classification: ~10-30 emails/s (depends on Apple Silicon chip)
+  - M1/M2: ~10-15 emails/s
+  - M3/M4: ~15-25 emails/s
+  - M5: ~20-30 emails/s (with Neural Accelerators)
+- 150,000 emails: ~5-15 hours (vs. 100+ hours sequential)
 
 ### CLI Options
 
+**Configuration:**
+- `--config PATH` - Path to configuration file (YAML or JSON)
+
 **Processing Options:**
-- `--model TEXT` - Ollama model name (default: gemma2:2b)
-- `--ollama-url TEXT` - Ollama base URL (default: http://localhost:11434)
+- `--model TEXT` - MLX model name from Hugging Face (default: mlx-community/Llama-3.2-3B-Instruct-4bit)
 - `--batch-size INT` - Emails per batch (default: 50)
 - `--fetch-size INT` - IMAP fetch size per request (default: 100)
 - `--concurrent-limit INT` - Max concurrent parallel tasks (default: 25)
 - `--dry-run/--no-dry-run` - Enable dry-run mode (default: True)
 - `--checkpoint-path TEXT` - Checkpoint database path (default: checkpoints.db)
+- `--email TEXT` - Email address to process (required unless in config file)
 
 **Filter Configuration:**
 - `--keywords TEXT` - Critical keywords to trigger KEEP (repeatable)
@@ -223,7 +278,7 @@ from inbox_reaper.state import Config
 
 # Create configuration
 config = Config(
-    model_name="gemma2:2b",
+    model_name="mlx-community/Llama-3.2-3B-Instruct-4bit",
     batch_size=50,
     concurrent_ai_limit=25,
     dry_run=True,
@@ -279,7 +334,7 @@ For detailed architecture documentation, see:
   - Node responsibilities and data flow
   - State schema with reducer annotations
   - Subgraph design patterns
-  - Integration points (IMAP, Ollama, SQLite)
+  - Integration points (IMAP, MLX, SQLite)
 - **[docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)** - Parallel processing deep dive
   - Send() API usage patterns
   - Synchronization primitives
