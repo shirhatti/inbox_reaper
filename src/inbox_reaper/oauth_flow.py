@@ -10,11 +10,10 @@ This module handles the OAuth 2.0 authentication flow with PKCE, including:
 import base64
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
-from authlib.integrations.requests_client import OAuth2Session
 from authlib.common.security import generate_token
+from authlib.integrations.requests_client import OAuth2Session
 
 from .oauth_config import get_oauth_config
 
@@ -22,21 +21,22 @@ from .oauth_config import get_oauth_config
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
     """HTTP handler for OAuth callback."""
 
-    auth_code: Optional[str] = None
-    error: Optional[str] = None
+    auth_code: str | None = None
+    error: str | None = None
 
-    def do_GET(self):
+    def do_GET(self):  # noqa: N802
         """Handle GET request from OAuth redirect."""
         # Parse the query parameters
         query_components = parse_qs(urlparse(self.path).query)
 
-        if 'code' in query_components:
+        if "code" in query_components:
             # Success - got authorization code
-            OAuthCallbackHandler.auth_code = query_components['code'][0]
+            OAuthCallbackHandler.auth_code = query_components["code"][0]
             self.send_response(200)
-            self.send_header('Content-type', 'text/html')
+            self.send_header("Content-type", "text/html")
             self.end_headers()
-            self.wfile.write(b'''
+            self.wfile.write(
+                b"""
                 <html>
                 <head><title>Authentication Successful</title></head>
                 <body>
@@ -44,14 +44,16 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
                     <p>You can close this window and return to the terminal.</p>
                 </body>
                 </html>
-            ''')
-        elif 'error' in query_components:
+            """
+            )
+        elif "error" in query_components:
             # Error occurred
-            OAuthCallbackHandler.error = query_components['error'][0]
+            OAuthCallbackHandler.error = query_components["error"][0]
             self.send_response(400)
-            self.send_header('Content-type', 'text/html')
+            self.send_header("Content-type", "text/html")
             self.end_headers()
-            self.wfile.write(f'''
+            self.wfile.write(
+                f"""
                 <html>
                 <head><title>Authentication Failed</title></head>
                 <body>
@@ -60,19 +62,20 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
                     <p>You can close this window and return to the terminal.</p>
                 </body>
                 </html>
-            '''.encode())
+            """.encode()
+            )
         else:
             self.send_response(400)
-            self.send_header('Content-type', 'text/html')
+            self.send_header("Content-type", "text/html")
             self.end_headers()
-            self.wfile.write(b'Invalid request')
+            self.wfile.write(b"Invalid request")
 
     def log_message(self, format, *args):
         """Suppress log messages."""
         pass
 
 
-def perform_oauth_flow(email: str, provider: str) -> Dict:
+def perform_oauth_flow(email: str, provider: str) -> dict:
     """Perform OAuth 2.0 authentication flow with PKCE.
 
     Args:
@@ -90,10 +93,10 @@ def perform_oauth_flow(email: str, provider: str) -> Dict:
 
     # Create OAuth2Session with PKCE support
     session = OAuth2Session(
-        client_id=config['client_id'],
-        redirect_uri=config['redirect_uri'],
-        scope=config['scope'],
-        code_challenge_method='S256'  # Use SHA256 for PKCE
+        client_id=config["client_id"],
+        redirect_uri=config["redirect_uri"],
+        scope=config["scope"],
+        code_challenge_method="S256",  # Use SHA256 for PKCE
     )
 
     # Generate PKCE code verifier
@@ -103,26 +106,24 @@ def perform_oauth_flow(email: str, provider: str) -> Dict:
     auth_params = {}
 
     # Add email hint for better UX
-    if provider == 'gmail':
-        auth_params['login_hint'] = email
-    elif provider == 'outlook':
-        auth_params['login_hint'] = email
+    if provider == "gmail":
+        auth_params["login_hint"] = email
+    elif provider == "outlook":
+        auth_params["login_hint"] = email
 
     auth_url, state = session.create_authorization_url(
-        config['auth_uri'],
-        code_verifier=code_verifier,
-        **auth_params
+        config["auth_uri"], code_verifier=code_verifier, **auth_params
     )
 
-    print(f"\nOpening browser for authentication...")
+    print("\nOpening browser for authentication...")
     print(f"If the browser doesn't open, visit this URL:\n{auth_url}\n")
 
     # Open browser
     webbrowser.open(auth_url)
 
     # Start local server to receive callback
-    port = int(config['redirect_uri'].split(':')[-1].rstrip('/'))
-    server = HTTPServer(('localhost', port), OAuthCallbackHandler)
+    port = int(config["redirect_uri"].split(":")[-1].rstrip("/"))
+    server = HTTPServer(("localhost", port), OAuthCallbackHandler)
 
     print(f"Waiting for authentication callback on port {port}...")
 
@@ -136,19 +137,21 @@ def perform_oauth_flow(email: str, provider: str) -> Dict:
         raise RuntimeError("No authorization code received")
 
     # Build authorization response URL
-    authorization_response = f"{config['redirect_uri']}?code={OAuthCallbackHandler.auth_code}&state={state}"
+    authorization_response = (
+        f"{config['redirect_uri']}?code={OAuthCallbackHandler.auth_code}&state={state}"
+    )
 
     # Exchange authorization code for tokens (authlib handles PKCE automatically)
     tokens = session.fetch_token(
-        config['token_uri'],
+        config["token_uri"],
         authorization_response=authorization_response,
-        code_verifier=code_verifier
+        code_verifier=code_verifier,
     )
 
-    return tokens
+    return tokens  # type: ignore[no-any-return]
 
 
-def refresh_access_token(refresh_token: str, provider: str) -> Dict:
+def refresh_access_token(refresh_token: str, provider: str) -> dict:
     """Refresh an expired access token.
 
     Args:
@@ -165,17 +168,13 @@ def refresh_access_token(refresh_token: str, provider: str) -> Dict:
 
     # Create OAuth2Session for token refresh
     session = OAuth2Session(
-        client_id=config['client_id'],
-        token={'refresh_token': refresh_token}
+        client_id=config["client_id"], token={"refresh_token": refresh_token}
     )
 
     # Refresh the token
-    tokens = session.refresh_token(
-        config['token_uri'],
-        refresh_token=refresh_token
-    )
+    tokens = session.refresh_token(config["token_uri"], refresh_token=refresh_token)
 
-    return tokens
+    return tokens  # type: ignore[no-any-return]
 
 
 def generate_xoauth2_string(email: str, access_token: str) -> str:
@@ -188,11 +187,13 @@ def generate_xoauth2_string(email: str, access_token: str) -> str:
     Returns:
         Base64-encoded XOAUTH2 string
     """
-    auth_string = f'user={email}\x01auth=Bearer {access_token}\x01\x01'
+    auth_string = f"user={email}\x01auth=Bearer {access_token}\x01\x01"
     return base64.b64encode(auth_string.encode()).decode()
 
 
-def test_imap_connection(email: str, access_token: str, provider: str) -> tuple[bool, str]:
+def test_imap_connection(
+    email: str, access_token: str, provider: str
+) -> tuple[bool, str]:
     """Test IMAP connection with OAuth credentials.
 
     Args:
@@ -207,10 +208,10 @@ def test_imap_connection(email: str, access_token: str, provider: str) -> tuple[
 
     try:
         # Determine IMAP host
-        if provider == 'gmail':
-            imap_host = 'imap.gmail.com'
-        elif provider == 'outlook':
-            imap_host = 'outlook.office365.com'
+        if provider == "gmail":
+            imap_host = "imap.gmail.com"
+        elif provider == "outlook":
+            imap_host = "outlook.office365.com"
         else:
             return False, f"Unknown provider: {provider}"
 
@@ -219,13 +220,13 @@ def test_imap_connection(email: str, access_token: str, provider: str) -> tuple[
 
         # Authenticate using XOAUTH2
         auth_string = generate_xoauth2_string(email, access_token)
-        imap.authenticate('XOAUTH2', lambda x: auth_string)
+        imap.authenticate("XOAUTH2", lambda x: auth_string)  # type: ignore[arg-type,return-value]
 
         # Select INBOX to verify connection
-        imap.select('INBOX')
-        typ, data = imap.search(None, 'ALL')
+        imap.select("INBOX")
+        typ, data = imap.search(None, "ALL")
 
-        if typ == 'OK':
+        if typ == "OK":
             num_messages = len(data[0].split())
             imap.logout()
             return True, f"Connected successfully! {num_messages} messages in INBOX"

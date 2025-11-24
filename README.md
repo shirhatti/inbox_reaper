@@ -34,19 +34,15 @@ The agent pipeline is defined in `dag.py`:
 
 ```bash
 # Install dependencies
-uv pip install -e .
-
-# Optional: Install Linux secret storage (for GNOME Keyring/KWallet)
-pip install -e .[linux]
+uv sync
 ```
 
 ## Authentication
 
-Inbox Reaper uses OAuth 2.0 for secure email access. Credentials are stored securely using your system's native credential storage:
-- **macOS**: Keychain Access
-- **Windows**: DPAPI (Windows Credential Manager)
-- **Linux**: Secret Service (GNOME Keyring, KWallet, etc.)
-- **Fallback**: Encrypted file storage
+Inbox Reaper uses OAuth 2.0 for secure email access. Credentials are stored securely using the [keyring](https://pypi.org/project/keyring/) library, which automatically uses your system's native credential storage:
+- **macOS**: Keychain
+- **Windows**: Windows Credential Locker
+- **Linux**: Secret Service (GNOME Keyring / KWallet)
 
 ### Login to Email Account
 
@@ -177,7 +173,7 @@ print(f"Deleted: {state.total_deleted}")
 
 ```bash
 # Install dependencies and set up pre-commit hooks automatically
-uv pip install -e ".[dev]"
+uv sync --extra dev
 uv run setup-dev
 ```
 
@@ -190,7 +186,7 @@ This will:
 
 ```bash
 # Install development dependencies
-uv pip install -e ".[dev]"
+uv sync --extra dev
 
 # Install pre-commit hooks manually
 uv run pre-commit install
