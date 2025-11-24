@@ -589,7 +589,7 @@ class TestTokenRefreshOnExpiry:
         mock_client_class.return_value = mock_client
 
         # Execute
-        asyncio.run(create_imap_client("test@outlook.com"))
+        result = asyncio.run(create_imap_client("test@outlook.com"))
 
         # Verify: refresh_access_token was NOT called
         mock_refresh.assert_not_called()
@@ -646,67 +646,77 @@ class TestTokenRefreshOnExpiry:
         # (will fail on actual connect, but client created)
         assert result == mock_client
 
+    @patch("inbox_reaper.langgraph_streaming.store_credentials")
     @patch("inbox_reaper.langgraph_streaming.AsyncIMAPClient")
     @patch("inbox_reaper.langgraph_streaming.get_credentials")
     @patch("inbox_reaper.langgraph_streaming.refresh_access_token")
     def test_create_imap_client_handles_invalid_expires_at_types(
-        self, mock_refresh, mock_get_creds, mock_client_class
+        self, mock_refresh, mock_get_creds, mock_client_class, mock_store_creds
     ):
-        """Test that create_imap_client handles non-string expires_at values
-        gracefully."""
+        """Test that create_imap_client proactively refreshes when expires_at
+        is invalid."""
         from inbox_reaper.langgraph_streaming import create_imap_client
 
-        # Test with None expires_at
+        # Test with None expires_at - should attempt refresh
         mock_get_creds.return_value = {
-            "access_token": "valid_token",
+            "access_token": "old_token",
             "refresh_token": "refresh_token",
             "provider": "gmail",
             "expires_at": None,  # None instead of string
         }
 
+        # Mock refresh to return new token
+        mock_refresh.return_value = {
+            "access_token": "new_refreshed_token",
+            "expires_in": 3600,
+        }
+
         mock_client = AsyncMock()
         mock_client_class.return_value = mock_client
 
-        # Execute - should not raise, should use existing token
+        # Execute - should attempt refresh and use new token
         asyncio.run(create_imap_client("test@gmail.com"))
 
-        # Verify: refresh was NOT attempted (can't parse None)
-        mock_refresh.assert_not_called()
+        # Verify: refresh WAS attempted (proactive refresh)
+        mock_refresh.assert_called_once_with("refresh_token", "gmail")
 
-        # Verify: AsyncIMAPClient was still created with existing token
+        # Verify: AsyncIMAPClient was created with NEW refreshed token
         mock_client_class.assert_called_once()
         call_kwargs = mock_client_class.call_args[1]
-        assert call_kwargs["access_token"] == "valid_token"
+        assert call_kwargs["access_token"] == "new_refreshed_token"
 
-        # Verify: result is the client instance
-        assert result == mock_client
+        # Verify: new credentials were persisted
+        mock_store_creds.assert_called_once()
 
         # Reset mocks for next test
         mock_refresh.reset_mock()
         mock_client_class.reset_mock()
         mock_get_creds.reset_mock()
+        mock_store_creds.reset_mock()
 
-        # Test with missing expires_at
+        # Test with missing expires_at - should also attempt refresh
         mock_get_creds.return_value = {
-            "access_token": "another_token",
-            "refresh_token": "refresh_token",
+            "access_token": "another_old_token",
+            "refresh_token": "refresh_token2",
             "provider": "outlook",
             # expires_at key is missing entirely
+        }
+
+        mock_refresh.return_value = {
+            "access_token": "another_new_token",
+            "expires_in": 3600,
         }
 
         mock_client2 = AsyncMock()
         mock_client_class.return_value = mock_client2
 
-        # Execute - should not raise
+        # Execute - should attempt refresh
         asyncio.run(create_imap_client("test@outlook.com"))
 
-        # Verify: refresh was NOT attempted
-        mock_refresh.assert_not_called()
+        # Verify: refresh WAS attempted
+        mock_refresh.assert_called_once_with("refresh_token2", "outlook")
 
-        # Verify: AsyncIMAPClient was created
-        assert mock_client_class.call_count == 1
-        call_kwargs2 = mock_client_class.call_args[1]
-        assert call_kwargs2["access_token"] == "another_token"
-
-        # Verify: result is the client instance
-        assert result2 == mock_client2
+        # Verify: AsyncIMAPClient was created with new token
+        mock_client_class.assert_called_once()
+        call_kwargs = mock_client_class.call_args[1]
+        assert call_kwargs["access_token"] == "another_new_token"
