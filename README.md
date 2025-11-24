@@ -156,10 +156,41 @@ print(f"Deleted: {state.total_deleted}")
 4. **Layered Decision Pipeline** - Cheap filters first, expensive AI last
 5. **Type Safety** - Full type hints with Pydantic validation
 
+## Testing & Benchmarking
+
+### Golden Dataset Testing
+
+Create a test dataset from your real emails with automatic PII sanitization:
+
+```bash
+# Fetch and label 20 emails interactively
+inbox-reaper create-test-data user@gmail.com --count 20
+```
+
+This will:
+1. Fetch emails via IMAP
+2. Auto-sanitize PII (emails, phone numbers, credit cards, etc.)
+3. Show diff in $EDITOR for review
+4. Prompt you to label each email (keep/delete)
+5. Save sanitized test cases to `test_data/golden/`
+
+Run golden dataset tests:
+
+```bash
+# Run classifier against labeled test data
+pytest tests/test_golden_dataset.py --run-golden
+
+# View detailed metrics
+pytest tests/test_golden_dataset.py --run-golden -v
+```
+
+**Note**: Golden tests are skipped by default in CI. See `test_data/README.md` for details.
+
 ## Next Steps
 
 - [x] Add OAuth 2.0 authentication with secure credential storage
-- [ ] Add IMAP email fetching using OAuth credentials
+- [x] Add IMAP email fetching using OAuth credentials
+- [x] Add golden dataset testing framework
 - [ ] Add SQLite persistence for progress tracking
 - [ ] Implement batch database operations
 - [ ] Add concurrent AI classification (asyncio + semaphore)

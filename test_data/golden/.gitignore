@@ -1,0 +1,9 @@
+# Ignore all test data files by default
+*.json
+
+# Keep this .gitignore file
+!.gitignore
+
+# If you want to commit specific test files (after thorough PII review),
+# you can add exceptions like:
+# !safe_example_001.json

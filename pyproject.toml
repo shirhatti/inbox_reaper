@@ -70,3 +70,6 @@ files = ["src"]
 testpaths = ["tests"]
 # Don't fail when no tests are collected (project doesn't have tests yet)
 addopts = "--strict-markers"
+markers = [
+    "golden: Golden dataset tests (skipped by default, run with --run-golden)",
+]
