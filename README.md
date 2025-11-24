@@ -146,6 +146,47 @@ inbox-reaper process --email user@gmail.com \
   --concurrent-limit 50 --batch-size 200
 ```
 
+### Configuration Files
+
+Instead of passing CLI arguments each time, you can use a configuration file:
+
+```bash
+# Copy example config
+cp config.example.yaml config.yaml
+# Or: cp config.example.json config.json
+
+# Edit your config file
+vim config.yaml
+
+# Run with config file (CLI args override file values)
+inbox-reaper process --config config.yaml
+
+# Mix config file with CLI overrides
+inbox-reaper process --config config.yaml --model mlx-community/Llama-3.2-1B-Instruct-4bit
+```
+
+**Example config.yaml:**
+```yaml
+# AI Settings
+model_name: mlx-community/Llama-3.2-3B-Instruct-4bit
+concurrent_ai_limit: 25
+
+# Email
+email: user@gmail.com
+
+# Filters
+keywords:
+  - important
+  - urgent
+whitelist_domains:
+  - example.com
+
+# Safety
+dry_run: true
+```
+
+See `config.example.yaml` or `config.example.json` for all available options.
+
 ### Checkpoint and Resume
 
 The system automatically creates checkpoints after each batch. If interrupted (CTRL-C, crash, etc.), you can resume:
@@ -206,6 +247,9 @@ inbox-reaper process --batch-size 200
 
 ### CLI Options
 
+**Configuration:**
+- `--config PATH` - Path to configuration file (YAML or JSON)
+
 **Processing Options:**
 - `--model TEXT` - MLX model name from Hugging Face (default: mlx-community/Llama-3.2-3B-Instruct-4bit)
 - `--batch-size INT` - Emails per batch (default: 50)
@@ -213,7 +257,7 @@ inbox-reaper process --batch-size 200
 - `--concurrent-limit INT` - Max concurrent parallel tasks (default: 25)
 - `--dry-run/--no-dry-run` - Enable dry-run mode (default: True)
 - `--checkpoint-path TEXT` - Checkpoint database path (default: checkpoints.db)
-- `--email TEXT` - Email address to process (required)
+- `--email TEXT` - Email address to process (required unless in config file)
 
 **Filter Configuration:**
 - `--keywords TEXT` - Critical keywords to trigger KEEP (repeatable)
