@@ -5,8 +5,11 @@ Each agent processes emails in the current batch and adds decisions.
 """
 
 import html
+import json
 import re
 from html.parser import HTMLParser
+
+from pydantic import BaseModel, Field
 
 from .mlx_backend import generate_text
 from .state import (
@@ -18,6 +21,19 @@ from .state import (
     ProcessingState,
     SenderStats,
 )
+
+
+class AIClassificationResponse(BaseModel):
+    """Schema for AI classification response with confidence score."""
+
+    is_marketing: bool = Field(
+        description="Whether the email is marketing/promotional content"
+    )
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Confidence score between 0.0 and 1.0 for the classification",
+    )
 
 
 def check_attachments(email: Email, config: Config) -> EmailDecision | None:
@@ -192,10 +208,11 @@ def truncate_symmetric(text: str, max_length: int = 2000) -> str:
 
 
 def classify_with_ai(email: Email, config: Config) -> EmailDecision:
-    """Classify email using MLX LLM.
+    """Classify email using MLX LLM with structured JSON output.
 
     This is the only non-pure function (has side effect of calling MLX).
     Returns DELETE decision for marketing, KEEP for everything else.
+    The model returns both classification and confidence score.
     """
     # Strip HTML and truncate symmetrically to preserve footer (unsubscribe links, etc.)
     body_preview = truncate_symmetric(email.body)
@@ -206,38 +223,53 @@ Subject: {email.subject}
 From: {email.sender}
 Body preview: {body_preview}
 
-Is this a marketing/promotional email that can be safely deleted?
-Answer only YES or NO.
-
-Answer:"""
+Analyze whether this is a marketing/promotional email that can be safely deleted.
+Provide your classification and a confidence score (0.0 to 1.0) for how certain you are."""
 
     try:
-        # Use MLX for inference
+        # Get JSON schema from Pydantic model
+        json_schema = AIClassificationResponse.model_json_schema()
+
+        # Use MLX for inference with JSON schema enforcement
         response = generate_text(
             model_name=config.model_name,
             prompt=prompt,
-            max_tokens=10,  # Just need "YES" or "NO"
+            max_tokens=50,  # Enough for JSON response
+            json_schema=json_schema,
         )
 
-        answer = response.strip().upper()
+        # Parse JSON response
+        # Try to extract JSON from response (in case model adds extra text)
+        response_text = response.strip()
 
-        if "YES" in answer:
-            decision = Decision.DELETE
+        # Find JSON object in response (handles cases where model adds text)
+        json_start = response_text.find("{")
+        json_end = response_text.rfind("}") + 1
+
+        if json_start != -1 and json_end > json_start:
+            json_text = response_text[json_start:json_end]
+            parsed = json.loads(json_text)
+            classification = AIClassificationResponse(**parsed)
+
+            decision = Decision.DELETE if classification.is_marketing else Decision.KEEP
+
+            return EmailDecision(
+                email=email,
+                decision=decision,
+                reason=FilterReason.AI_CLASSIFIED,
+                confidence=classification.confidence,
+            )
         else:
-            decision = Decision.KEEP
-
-        return EmailDecision(
-            email=email,
-            decision=decision,
-            reason=FilterReason.AI_CLASSIFIED,
-            confidence=0.8,
-        )
+            # No valid JSON found
+            raise ValueError("No valid JSON in response")
 
     except Exception as e:
         # On error, default to KEEP (safe default)
         import logging
 
-        logging.getLogger(__name__).error(f"MLX classification failed: {e}")
+        logging.getLogger(__name__).error(
+            f"MLX classification failed for email {email.uid}: {e}"
+        )
         return EmailDecision(
             email=email,
             decision=Decision.KEEP,
