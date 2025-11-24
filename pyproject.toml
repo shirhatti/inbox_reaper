@@ -77,5 +77,4 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Don't fail when no tests are collected (project doesn't have tests yet)
-addopts = "--strict-markers"
+addopts = "--strict-markers -W error"
