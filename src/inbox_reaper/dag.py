@@ -5,6 +5,8 @@ The workflow is a directed acyclic graph where each node is an agent function
 that transforms the ProcessingState.
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
 
 from google import genai
