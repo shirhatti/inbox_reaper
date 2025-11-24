@@ -422,6 +422,148 @@ Date: {email_data["date"]}
     asyncio.run(_fetch())
 
 
+@cli.command()
+@click.argument("email")
+@click.option("--refresh", is_flag=True, help="Also test token refresh")
+def diagnose(email: str, refresh: bool):
+    """Diagnose OAuth token and credential issues.
+
+    This command shows detailed information about stored credentials,
+    decodes JWT tokens to inspect expiration claims, and can test token refresh.
+
+    Example:
+        inbox-reaper diagnose user@gmail.com
+        inbox-reaper diagnose user@gmail.com --refresh
+    """
+    import base64
+    import json
+
+    # Get credentials
+    creds = credential_helper.get_credentials(email)
+    if not creds:
+        click.echo(f"No credentials found for {email}", err=True)
+        click.echo(f"\nUse 'inbox-reaper login {email}' to authenticate first.")
+        return
+
+    click.echo("=" * 60)
+    click.echo("CREDENTIAL DIAGNOSTICS")
+    click.echo("=" * 60)
+    click.echo(f"\nEmail: {email}")
+    click.echo(f"Provider: {creds.get('provider', 'UNKNOWN')}")
+    click.echo(f"Token Type: {creds.get('token_type', 'UNKNOWN')}")
+
+    # Check expires_at field
+    expires_at_str = creds.get("expires_at")
+    click.echo(f"\nStored expires_at: {expires_at_str}")
+    click.echo(f"expires_at type: {type(expires_at_str).__name__}")
+
+    if expires_at_str:
+        if isinstance(expires_at_str, str):
+            try:
+                expires_at = datetime.fromisoformat(expires_at_str)
+                now = datetime.now()
+                if expires_at < now:
+                    delta = now - expires_at
+                    click.echo(f"Status: EXPIRED {delta} ago", err=True)
+                else:
+                    delta = expires_at - now
+                    click.echo(f"Status: Valid for {delta}")
+            except Exception as e:
+                click.echo(f"Error parsing expires_at: {e}", err=True)
+        else:
+            click.echo(f"WARNING: expires_at is not a string: {expires_at_str}", err=True)
+    else:
+        click.echo("WARNING: expires_at is missing or None", err=True)
+
+    # Try to decode access token as JWT
+    access_token = creds.get("access_token", "")
+    click.echo(f"\n--- Access Token ---")
+    click.echo(f"Token length: {len(access_token)} characters")
+    click.echo(f"Token preview: {access_token[:50]}..." if len(access_token) > 50 else f"Token: {access_token}")
+
+    # Check if it looks like a JWT (has 3 parts separated by dots)
+    parts = access_token.split(".")
+    if len(parts) == 3:
+        click.echo("\nToken appears to be a JWT (3 parts)")
+        try:
+            # Decode header
+            header_data = parts[0]
+            # Add padding if needed
+            header_data += "=" * (4 - len(header_data) % 4)
+            header_json = base64.urlsafe_b64decode(header_data).decode("utf-8")
+            header = json.loads(header_json)
+            click.echo(f"\nJWT Header: {json.dumps(header, indent=2)}")
+
+            # Decode payload
+            payload_data = parts[1]
+            # Add padding if needed
+            payload_data += "=" * (4 - len(payload_data) % 4)
+            payload_json = base64.urlsafe_b64decode(payload_data).decode("utf-8")
+            payload = json.loads(payload_json)
+            click.echo(f"\nJWT Payload: {json.dumps(payload, indent=2)}")
+
+            # Check for expiration in JWT
+            if "exp" in payload:
+                exp_timestamp = payload["exp"]
+                exp_dt = datetime.fromtimestamp(exp_timestamp)
+                now = datetime.now()
+                click.echo(f"\nJWT exp claim: {exp_dt.isoformat()}")
+                if exp_dt < now:
+                    delta = now - exp_dt
+                    click.echo(f"JWT Status: EXPIRED {delta} ago", err=True)
+                else:
+                    delta = exp_dt - now
+                    click.echo(f"JWT Status: Valid for {delta}")
+            else:
+                click.echo("\nNo 'exp' claim found in JWT")
+
+        except Exception as e:
+            click.echo(f"\nError decoding JWT: {e}", err=True)
+    else:
+        click.echo(f"\nToken does not appear to be a JWT (has {len(parts)} parts, expected 3)")
+
+    # Test token refresh if requested
+    if refresh:
+        click.echo("\n" + "=" * 60)
+        click.echo("TESTING TOKEN REFRESH")
+        click.echo("=" * 60)
+
+        refresh_token = creds.get("refresh_token")
+        if not refresh_token:
+            click.echo("No refresh token found", err=True)
+            return
+
+        try:
+            click.echo(f"\nRefreshing token for {creds['provider']}...")
+            tokens = refresh_access_token(refresh_token, creds["provider"])
+
+            click.echo("\nRefresh Response:")
+            click.echo(f"  Keys in response: {list(tokens.keys())}")
+
+            # Show what we got back
+            for key, value in tokens.items():
+                if key in ["access_token", "refresh_token"]:
+                    # Mask sensitive values
+                    preview = f"{value[:20]}...{value[-10:]}" if len(value) > 30 else value[:30]
+                    click.echo(f"  {key}: {preview}")
+                else:
+                    click.echo(f"  {key}: {value}")
+
+            # Check if expires_in is present
+            expires_in = tokens.get("expires_in")
+            if expires_in:
+                click.echo(f"\n✓ expires_in present: {expires_in} seconds ({expires_in/3600:.1f} hours)")
+                future_expiry = datetime.now() + timedelta(seconds=expires_in)
+                click.echo(f"  Would expire at: {future_expiry.isoformat()}")
+            else:
+                click.echo("\n✗ WARNING: expires_in NOT present in refresh response", err=True)
+
+        except Exception as e:
+            click.echo(f"\nError during token refresh: {e}", err=True)
+            import traceback
+            click.echo(traceback.format_exc(), err=True)
+
+
 def main():
     """Main entry point for the CLI."""
     cli()
