@@ -84,11 +84,17 @@ inbox-reaper logout user@gmail.com
 
 ### OAuth Details
 
-Inbox Reaper uses **Thunderbird's public OAuth client IDs** for Gmail and Outlook, which means:
+Inbox Reaper uses **Thunderbird's public OAuth client IDs** for Gmail and Outlook with **PKCE** (Proof Key for Code Exchange) for enhanced security:
 - ✅ No need to create your own OAuth app
 - ✅ Works out of the box
+- ✅ PKCE protection against authorization code interception
 - ✅ Secure and privacy-focused
 - ⚠️ Credentials are stored locally on your machine only
+
+**Technical Implementation:**
+- Uses [Authlib](https://docs.authlib.org/) for OAuth 2.0 with PKCE
+- SHA256 code challenge method for maximum security
+- Automatic token refresh when expired
 
 ## Usage
 

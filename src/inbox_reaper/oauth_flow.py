@@ -1,21 +1,20 @@
 """OAuth authentication flow for email providers.
 
-This module handles the OAuth 2.0 authentication flow, including:
-- Authorization URL generation
+This module handles the OAuth 2.0 authentication flow with PKCE, including:
+- Authorization URL generation with PKCE
 - Local HTTP server for redirect handling
-- Token exchange
+- Token exchange with code verifier
 - Token refresh
 """
 
 import base64
-import json
-import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
-import requests
+from authlib.integrations.requests_client import OAuth2Session
+from authlib.common.security import generate_token
 
 from .oauth_config import get_oauth_config
 
@@ -74,7 +73,7 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
 
 
 def perform_oauth_flow(email: str, provider: str) -> Dict:
-    """Perform OAuth 2.0 authentication flow.
+    """Perform OAuth 2.0 authentication flow with PKCE.
 
     Args:
         email: User's email address
@@ -89,13 +88,19 @@ def perform_oauth_flow(email: str, provider: str) -> Dict:
     """
     config = get_oauth_config(provider)
 
-    # Build authorization URL
-    auth_params = {
-        'client_id': config['client_id'],
-        'response_type': 'code',
-        'redirect_uri': config['redirect_uri'],
-        'scope': config['scope'],
-    }
+    # Create OAuth2Session with PKCE support
+    session = OAuth2Session(
+        client_id=config['client_id'],
+        redirect_uri=config['redirect_uri'],
+        scope=config['scope'],
+        code_challenge_method='S256'  # Use SHA256 for PKCE
+    )
+
+    # Generate PKCE code verifier
+    code_verifier = generate_token(48)
+
+    # Build authorization URL with PKCE
+    auth_params = {}
 
     # Add email hint for better UX
     if provider == 'gmail':
@@ -103,7 +108,11 @@ def perform_oauth_flow(email: str, provider: str) -> Dict:
     elif provider == 'outlook':
         auth_params['login_hint'] = email
 
-    auth_url = f"{config['auth_uri']}?{urllib.parse.urlencode(auth_params)}"
+    auth_url, state = session.create_authorization_url(
+        config['auth_uri'],
+        code_verifier=code_verifier,
+        **auth_params
+    )
 
     print(f"\nOpening browser for authentication...")
     print(f"If the browser doesn't open, visit this URL:\n{auth_url}\n")
@@ -126,24 +135,15 @@ def perform_oauth_flow(email: str, provider: str) -> Dict:
     if not OAuthCallbackHandler.auth_code:
         raise RuntimeError("No authorization code received")
 
-    # Exchange authorization code for tokens
-    token_params = {
-        'client_id': config['client_id'],
-        'code': OAuthCallbackHandler.auth_code,
-        'redirect_uri': config['redirect_uri'],
-        'grant_type': 'authorization_code',
-    }
+    # Build authorization response URL
+    authorization_response = f"{config['redirect_uri']}?code={OAuthCallbackHandler.auth_code}&state={state}"
 
-    response = requests.post(config['token_uri'], data=token_params)
-
-    if response.status_code != 200:
-        raise RuntimeError(f"Token exchange failed: {response.text}")
-
-    tokens = response.json()
-
-    # Validate required fields
-    if 'access_token' not in tokens:
-        raise RuntimeError("No access token in response")
+    # Exchange authorization code for tokens (authlib handles PKCE automatically)
+    tokens = session.fetch_token(
+        config['token_uri'],
+        authorization_response=authorization_response,
+        code_verifier=code_verifier
+    )
 
     return tokens
 
@@ -163,21 +163,17 @@ def refresh_access_token(refresh_token: str, provider: str) -> Dict:
     """
     config = get_oauth_config(provider)
 
-    token_params = {
-        'client_id': config['client_id'],
-        'refresh_token': refresh_token,
-        'grant_type': 'refresh_token',
-    }
+    # Create OAuth2Session for token refresh
+    session = OAuth2Session(
+        client_id=config['client_id'],
+        token={'refresh_token': refresh_token}
+    )
 
-    response = requests.post(config['token_uri'], data=token_params)
-
-    if response.status_code != 200:
-        raise RuntimeError(f"Token refresh failed: {response.text}")
-
-    tokens = response.json()
-
-    if 'access_token' not in tokens:
-        raise RuntimeError("No access token in refresh response")
+    # Refresh the token
+    tokens = session.refresh_token(
+        config['token_uri'],
+        refresh_token=refresh_token
+    )
 
     return tokens
 
