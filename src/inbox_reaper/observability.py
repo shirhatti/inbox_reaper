@@ -396,7 +396,7 @@ class MetricsCollector:
         metrics = collector.export_prometheus()
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize metrics collector."""
         self._lock = threading.Lock()
 
