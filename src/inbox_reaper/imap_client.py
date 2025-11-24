@@ -406,7 +406,8 @@ class AsyncIMAPClient:
 
         try:
             # Use uid_search to directly get UIDs (native aioimaplib method)
-            response = await self.client.uid_search(criteria)
+            # Pass charset=None to avoid BADCHARSET errors on Exchange/Outlook servers
+            response = await self.client.uid_search(criteria, charset=None)
             if response.result != "OK":
                 raise IMAPConnectionError(f"UID search failed: {response.lines}")
 
