@@ -567,7 +567,12 @@ class AsyncIMAPClient:
     async def delete_emails(self, uids: list[str]) -> int:
         """Delete emails by UID.
 
-        Marks emails as deleted and expunges them from the mailbox.
+        For Gmail: Moves emails to [Gmail]/Trash before deletion to ensure they're
+        actually deleted rather than just archived. For other providers: Marks
+        emails as deleted and expunges them from the mailbox.
+
+        Note: Gmail's default IMAP behavior archives emails when deleted from INBOX.
+        To permanently delete, we first copy to Trash, then expunge from INBOX.
 
         Args:
             uids: List of email UIDs to delete
@@ -587,8 +592,20 @@ class AsyncIMAPClient:
         deleted_count = 0
 
         try:
-            # Mark emails as deleted
             uid_set = ",".join(uids)
+
+            # For Gmail, copy to Trash first to ensure proper deletion
+            if self.host == "imap.gmail.com":
+                logger.debug(f"Gmail detected: Moving {len(uids)} emails to Trash")
+                response = await self.client.uid("copy", uid_set, '"[Gmail]/Trash"')
+
+                if response.result != "OK":
+                    logger.warning(
+                        f"Failed to copy emails to Trash: {response.lines}. "
+                        "Proceeding with standard deletion (will archive instead)."
+                    )
+
+            # Mark emails as deleted
             response = await self.client.uid("store", uid_set, "+FLAGS", r"(\Deleted)")
 
             if response.result != "OK":
@@ -596,7 +613,8 @@ class AsyncIMAPClient:
                     f"Failed to mark emails as deleted: {response.lines}"
                 )
 
-            # Expunge to permanently delete
+            # Expunge to remove from current mailbox
+            # Note: Gmail auto-expunges, so this may be redundant but harmless
             response = await self.client.expunge()
 
             if response.result != "OK":
@@ -604,31 +622,8 @@ class AsyncIMAPClient:
                     f"Failed to expunge deleted emails: {response.lines}"
                 )
 
-            # Parse EXPUNGE responses to track which messages were expunged
-            expunged_seq_nums = []
-            for line in response.lines:
-                line_str = line.decode() if isinstance(line, bytes) else str(line)
-                if "EXPUNGE" in line_str:
-                    # Parse sequence number from "* XXXX EXPUNGE" format
-                    parts = line_str.split()
-                    if len(parts) >= 2 and parts[-1] == "EXPUNGE":
-                        try:
-                            seq_num = int(parts[-2])
-                            expunged_seq_nums.append(seq_num)
-                        except (ValueError, IndexError):
-                            logger.warning(
-                                f"Failed to parse EXPUNGE response: {line_str}"
-                            )
-
             deleted_count = len(uids)
-            if expunged_seq_nums:
-                logger.info(
-                    f"Deleted {deleted_count} emails (expunged sequence numbers: "
-                    f"{min(expunged_seq_nums)}-{max(expunged_seq_nums)}, "
-                    f"total: {len(expunged_seq_nums)})"
-                )
-            else:
-                logger.info(f"Deleted {deleted_count} emails")
+            logger.info(f"Deleted {deleted_count} emails from mailbox")
 
         except Exception as e:
             raise IMAPConnectionError(f"Failed to delete emails: {e}") from e
