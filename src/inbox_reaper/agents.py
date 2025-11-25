@@ -5,8 +5,11 @@ Each agent processes emails in the current batch and adds decisions.
 """
 
 import html
+import json
 import re
 from html.parser import HTMLParser
+
+from pydantic import BaseModel, Field
 
 from .mlx_backend import generate_text
 from .state import (
@@ -18,6 +21,23 @@ from .state import (
     ProcessingState,
     SenderStats,
 )
+
+
+class AIClassificationResponse(BaseModel):
+    """Schema for AI classification response with confidence score."""
+
+    is_marketing: bool = Field(
+        description="Whether the email is marketing/promotional content"
+    )
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Confidence score between 0.0 and 1.0 for the classification",
+    )
+
+
+# Cache the JSON schema at module level (generated once, reused for all classifications)
+_AI_CLASSIFICATION_SCHEMA = AIClassificationResponse.model_json_schema()
 
 
 def check_attachments(email: Email, config: Config) -> EmailDecision | None:
@@ -332,23 +352,24 @@ def truncate_symmetric(text: str, max_length: int = 2000) -> str:
 
 
 def classify_with_ai(email: Email, config: Config) -> EmailDecision:
-    """Classify email using MLX LLM.
+    """Classify email using MLX LLM with structured JSON output.
 
     This is the only non-pure function (has side effect of calling MLX).
     Returns DELETE decision for marketing, KEEP for everything else.
+    The model returns both classification and confidence score.
     """
     # Strip HTML and truncate symmetrically to preserve footer (unsubscribe links, etc.)
     body_preview = truncate_symmetric(email.body)
 
-    prompt = f"""Classify this email. Answer YES to DELETE, NO to KEEP.
+    prompt = f"""Classify this email as marketing/promotional or important.
 
-KEEP (answer NO) if:
+KEEP if:
 - Receipt: "Thank you for your payment (Receipt# 123)", "Invoice #456"
 - Shipping: "Your package is arriving", "Order shipped", "Tracking number"
 - Financial: "We mailed your card", "Statement available", "Account alert"
 - Personal: Email from a person (not a company)
 
-DELETE (answer YES) if:
+DELETE if:
 - Marketing: Sales, discounts, coupons, "Save 20%", "Limited time"
 - Newsletters: Updates, blog posts, curated content
 - Notifications: GitHub, Slack, automated alerts
@@ -359,37 +380,58 @@ Subject: {email.subject}
 From: {email.sender}
 Body: {body_preview}
 
-Can this be safely deleted? YES or NO only.
-
-Answer:"""
+Analyze whether this is marketing/promotional that can be safely deleted.
+Provide your classification (is_marketing: true/false) and confidence (0.0-1.0)."""
 
     try:
-        # Use MLX for inference
+        # Use MLX for inference with JSON schema enforcement
         response = generate_text(
             model_name=config.model_name,
             prompt=prompt,
-            max_tokens=10,  # Just need "YES" or "NO"
+            max_tokens=50,  # Enough for JSON response
+            json_schema=_AI_CLASSIFICATION_SCHEMA,
         )
 
-        answer = response.strip().upper()
+        # Parse JSON response
+        # Try to extract JSON from response (in case model adds extra text)
+        response_text = response.strip()
 
-        if "YES" in answer:
-            decision = Decision.DELETE
+        # Find JSON object in response (handles cases where model adds text)
+        json_start = response_text.find("{")
+        json_end = response_text.rfind("}") + 1
+
+        if json_start != -1 and json_end > json_start:
+            json_text = response_text[json_start:json_end]
+            parsed = json.loads(json_text)
+            classification = AIClassificationResponse(**parsed)
+
+            # Only delete if marked as marketing AND confidence >= threshold
+            # Otherwise, keep (safe default for low confidence)
+            if (
+                classification.is_marketing
+                and classification.confidence >= config.ai_confidence_threshold
+            ):
+                decision = Decision.DELETE
+            else:
+                decision = Decision.KEEP
+
+            return EmailDecision(
+                email=email,
+                decision=decision,
+                reason=FilterReason.AI_CLASSIFIED,
+                confidence=classification.confidence,
+            )
         else:
-            decision = Decision.KEEP
-
-        return EmailDecision(
-            email=email,
-            decision=decision,
-            reason=FilterReason.AI_CLASSIFIED,
-            confidence=0.8,
-        )
+            # No valid JSON found
+            raise ValueError("No valid JSON in response")
 
     except Exception as e:
         # On error, default to KEEP (safe default)
         import logging
 
-        logging.getLogger(__name__).error(f"MLX classification failed: {e}")
+        logging.getLogger(__name__).error(
+            f"MLX classification failed for email {email.uid}: {e}"
+        )
         return EmailDecision(
             email=email,
             decision=Decision.KEEP,

@@ -32,7 +32,7 @@ def _normalize_credentials(creds: dict) -> dict:
     expires_at = creds.get("expires_at")
     if expires_at is not None and not isinstance(expires_at, str):
         # Convert Unix timestamp to ISO string
-        if isinstance(expires_at, (int, float)):
+        if isinstance(expires_at, int | float):
             creds["expires_at"] = datetime.fromtimestamp(expires_at).isoformat()
 
     # Remove extra OAuth response fields that shouldn't be stored

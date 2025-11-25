@@ -6,6 +6,7 @@
   "batch_size": 50,
   "max_emails": 100,
   "auto_delete_threshold": 5,
+  "ai_confidence_threshold": 0.7,
   "keywords": [
     "vilas shirhatti",
     "tabor oaks",

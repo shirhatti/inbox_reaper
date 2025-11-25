@@ -97,7 +97,7 @@ def merge_config_with_cli_args(
         if value is not None:
             # Special handling for lists (like keywords, whitelist_domains)
             # If CLI provides an empty tuple/list, don't override file config
-            if isinstance(value, (tuple, list)) and len(value) == 0:
+            if isinstance(value, tuple | list) and len(value) == 0:
                 continue
             merged[key] = value
 

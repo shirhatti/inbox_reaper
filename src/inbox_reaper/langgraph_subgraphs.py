@@ -9,10 +9,13 @@ processing while maintaining thread-safe state updates via reducers.
 """
 
 import asyncio
+import json
 from collections.abc import Callable
 from typing import cast
 
 from .agents import (
+    _AI_CLASSIFICATION_SCHEMA,
+    AIClassificationResponse,
     check_attachments,
     check_keywords,
     check_marketing_indicators,
@@ -447,10 +450,11 @@ def final_decision_node(state: GraphState) -> GraphState:
 
 
 async def classify_with_ai_async(email: Email, config: Config) -> EmailDecision:
-    """Classify email using MLX LLM with async support.
+    """Classify email using MLX LLM with structured JSON output (async).
 
     Async version of classify_with_ai from agents.py.
     Uses MLX async interface for parallel processing.
+    The model returns both classification and confidence score.
 
     Args:
         email: Email to classify
@@ -464,36 +468,67 @@ async def classify_with_ai_async(email: Email, config: Config) -> EmailDecision:
 
     prompt = f"""Classify this email as marketing/promotional or important.
 
+KEEP if:
+- Receipt: "Thank you for your payment (Receipt# 123)", "Invoice #456"
+- Shipping: "Your package is arriving", "Order shipped", "Tracking number"
+- Financial: "We mailed your card", "Statement available", "Account alert"
+- Personal: Email from a person (not a company)
+
+DELETE if:
+- Marketing: Sales, discounts, coupons, "Save 20%", "Limited time"
+- Newsletters: Updates, blog posts, curated content
+- Notifications: GitHub, Slack, automated alerts
+- Surveys: "Tell us what you think"
+
+Email:
 Subject: {email.subject}
 From: {email.sender}
-Body preview: {body_preview}
+Body: {body_preview}
 
-Is this a marketing/promotional email that can be safely deleted?
-Answer only YES or NO.
-
-Answer:"""
+Analyze whether this is marketing/promotional that can be safely deleted.
+Provide your classification (is_marketing: true/false) and confidence (0.0-1.0)."""
 
     try:
-        # Use async MLX inference
+        # Use async MLX inference with JSON schema enforcement
         response = await generate_text_async(
             model_name=config.model_name,
             prompt=prompt,
-            max_tokens=10,  # Just need "YES" or "NO"
+            max_tokens=50,  # Enough for JSON response
+            json_schema=_AI_CLASSIFICATION_SCHEMA,
         )
 
-        answer = response.strip().upper()
+        # Parse JSON response
+        # Try to extract JSON from response (in case model adds extra text)
+        response_text = response.strip()
 
-        if "YES" in answer:
-            decision = Decision.DELETE
+        # Find JSON object in response (handles cases where model adds text)
+        json_start = response_text.find("{")
+        json_end = response_text.rfind("}") + 1
+
+        if json_start != -1 and json_end > json_start:
+            json_text = response_text[json_start:json_end]
+            parsed = json.loads(json_text)
+            classification = AIClassificationResponse(**parsed)
+
+            # Only delete if marked as marketing AND confidence >= threshold
+            # Otherwise, keep (safe default for low confidence)
+            if (
+                classification.is_marketing
+                and classification.confidence >= config.ai_confidence_threshold
+            ):
+                decision = Decision.DELETE
+            else:
+                decision = Decision.KEEP
+
+            return EmailDecision(
+                email=email,
+                decision=decision,
+                reason=FilterReason.AI_CLASSIFIED,
+                confidence=classification.confidence,
+            )
         else:
-            decision = Decision.KEEP
-
-        return EmailDecision(
-            email=email,
-            decision=decision,
-            reason=FilterReason.AI_CLASSIFIED,
-            confidence=0.8,
-        )
+            # No valid JSON found
+            raise ValueError("No valid JSON in response")
 
     except Exception as e:
         # On error, default to UNCERTAIN with low confidence

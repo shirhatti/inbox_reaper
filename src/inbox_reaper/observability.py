@@ -1262,7 +1262,7 @@ def create_prometheus_endpoint(
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     class MetricsHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
+        def do_GET(self):  # noqa: N802
             if self.path == "/metrics":
                 metrics = metrics_collector.export_prometheus()
                 self.send_response(200)

@@ -40,9 +40,7 @@ keywords:
 whitelist_domains:
   - example.com
 """
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(config_content)
             temp_path = f.name
 
@@ -67,9 +65,7 @@ whitelist_domains:
 email: test@example.com
 batch_size: 50
 """
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write(config_content)
             temp_path = f.name
 
@@ -91,9 +87,7 @@ batch_size: 50
             "whitelist_domains": ["json.com"],
         }
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config_data, f)
             temp_path = f.name
 
@@ -133,9 +127,7 @@ batch_size: 50
 email: test@example.com
 keywords: [invalid
 """
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(invalid_yaml)
             temp_path = f.name
 
@@ -150,9 +142,7 @@ keywords: [invalid
         """Test loading an invalid JSON file."""
         invalid_json = '{"email": "test@example.com", "batch_size": }'
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             f.write(invalid_json)
             temp_path = f.name
 
@@ -170,9 +160,7 @@ email: test@example.com
 max_emails: null
 batch_size: 50
 """
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(config_content)
             temp_path = f.name
 
@@ -192,9 +180,7 @@ batch_size: 50
             "batch_size": 50,
         }
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(config_data, f)
             temp_path = f.name
 
@@ -209,9 +195,7 @@ batch_size: 50
     @requires_yaml
     def test_load_yaml_not_dict(self):
         """Test loading YAML that isn't a dictionary."""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write("- item1\n- item2\n")  # YAML list instead of dict
             temp_path = f.name
 
@@ -225,9 +209,7 @@ batch_size: 50
 
     def test_load_json_not_dict(self):
         """Test loading JSON that isn't a dictionary."""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(["item1", "item2"], f)  # JSON array instead of object
             temp_path = f.name
 
@@ -242,9 +224,7 @@ batch_size: 50
     @requires_yaml
     def test_load_empty_yaml(self):
         """Test loading an empty YAML file."""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write("")
             temp_path = f.name
 
@@ -259,9 +239,7 @@ batch_size: 50
     @pytest.mark.skipif(HAS_YAML, reason="Only test when PyYAML is not installed")
     def test_load_yaml_without_pyyaml_installed(self):
         """Test that proper error is shown when PyYAML is not installed."""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write("email: test@example.com")
             temp_path = f.name
 
@@ -288,9 +266,7 @@ important_extensions:
   - .docx
   - .xlsx
 """
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(config_content)
             temp_path = f.name
 

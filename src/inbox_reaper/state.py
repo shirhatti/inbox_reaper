@@ -88,6 +88,7 @@ class Config(BaseModel):
 
     # Decision thresholds
     auto_delete_threshold: int = 5
+    ai_confidence_threshold: float = 0.7
 
     # Keywords & whitelist
     keywords: list[str] = Field(default_factory=list)

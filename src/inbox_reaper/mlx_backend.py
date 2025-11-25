@@ -73,13 +73,19 @@ def get_mlx_model(model_name: str) -> tuple[Any, Any]:
         raise
 
 
-def generate_text(model_name: str, prompt: str, max_tokens: int = 100) -> str:
+def generate_text(
+    model_name: str,
+    prompt: str,
+    max_tokens: int = 100,
+    json_schema: dict[str, Any] | None = None,
+) -> str:
     """Generate text using MLX model (synchronous).
 
     Args:
         model_name: Hugging Face model ID
         prompt: Input prompt for generation
         max_tokens: Maximum tokens to generate
+        json_schema: Optional JSON schema to enforce structured output
 
     Returns:
         Generated text string
@@ -96,11 +102,24 @@ def generate_text(model_name: str, prompt: str, max_tokens: int = 100) -> str:
 
     model, tokenizer = get_mlx_model(model_name)
 
+    # If JSON schema provided, augment the prompt
+    final_prompt = prompt
+    if json_schema:
+        import json
+
+        schema_str = json.dumps(json_schema, indent=2)
+        final_prompt = f"""{prompt}
+
+You must respond with valid JSON matching this schema:
+{schema_str}
+
+Respond with only the JSON object, no additional text:"""
+
     # Generate text
     response = generate(
         model,
         tokenizer,
-        prompt=prompt,
+        prompt=final_prompt,
         max_tokens=max_tokens,
         verbose=False,  # Suppress token-by-token output
     )
@@ -110,7 +129,10 @@ def generate_text(model_name: str, prompt: str, max_tokens: int = 100) -> str:
 
 
 async def generate_text_async(
-    model_name: str, prompt: str, max_tokens: int = 100
+    model_name: str,
+    prompt: str,
+    max_tokens: int = 100,
+    json_schema: dict[str, Any] | None = None,
 ) -> str:
     """Generate text using MLX model (asynchronous).
 
@@ -120,6 +142,7 @@ async def generate_text_async(
         model_name: Hugging Face model ID
         prompt: Input prompt for generation
         max_tokens: Maximum tokens to generate
+        json_schema: Optional JSON schema to enforce structured output
 
     Returns:
         Generated text string
@@ -128,10 +151,17 @@ async def generate_text_async(
         ImportError: If mlx-lm is not installed
     """
     # Run synchronous generate in thread pool to avoid blocking
+    from functools import partial
+
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None, generate_text, model_name, prompt, max_tokens
+    generate_fn = partial(
+        generate_text,
+        model_name=model_name,
+        prompt=prompt,
+        max_tokens=max_tokens,
+        json_schema=json_schema,
     )
+    return await loop.run_in_executor(None, generate_fn)
 
 
 def download_model(model_name: str) -> bool:
