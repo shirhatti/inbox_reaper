@@ -553,6 +553,9 @@ class AsyncIMAPClient:
         Returns:
             Dictionary mapping UID to header dict
         """
+        if not self.client:
+            raise IMAPConnectionError("Not connected to IMAP server")
+
         headers = {}
 
         for uid in uids:
