@@ -279,11 +279,32 @@ class HTMLTextExtractor(HTMLParser):
         return "".join(self.text_parts)
 
 
+def remove_base64_images(text: str) -> str:
+    """Remove base64 encoded images from text.
+
+    Removes data URLs containing base64 encoded images which can appear in
+    HTML emails as inline images. These bloat the text and provide no value
+    for classification.
+
+    Args:
+        text: The text that may contain base64 encoded images
+
+    Returns:
+        Text with base64 image data removed
+    """
+    # Match data URLs for images: data:image/[type];base64,[base64data]
+    # The base64 data consists of A-Za-z0-9+/= characters
+    # We match until we hit a quote, whitespace, or < (end of attribute value)
+    pattern = r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+"
+    return re.sub(pattern, "", text)
+
+
 def strip_html(text: str) -> str:
     """Strip HTML tags and extract plain text content.
 
-    Removes HTML tags, scripts, styles, and converts HTML entities to text.
-    Cleans up excessive whitespace while preserving paragraph breaks.
+    Removes HTML tags, scripts, styles, base64 images, and converts HTML
+    entities to text. Cleans up excessive whitespace while preserving
+    paragraph breaks.
 
     Args:
         text: The HTML or plain text to process
@@ -291,6 +312,9 @@ def strip_html(text: str) -> str:
     Returns:
         Plain text with HTML removed and whitespace normalized
     """
+    # Remove base64 encoded images first (they bloat the text)
+    text = remove_base64_images(text)
+
     # If text doesn't contain HTML tags, return as-is
     if "<" not in text:
         return text
