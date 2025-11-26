@@ -8,6 +8,7 @@ import html
 import json
 import re
 from html.parser import HTMLParser
+from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,9 @@ from .state import (
     ProcessingState,
     SenderStats,
 )
+
+if TYPE_CHECKING:
+    from .ui.events import EventEmitter
 
 
 class AIClassificationResponse(BaseModel):
@@ -351,7 +355,11 @@ def truncate_symmetric(text: str, max_length: int = 2000) -> str:
     return start + marker + end
 
 
-def classify_with_ai(email: Email, config: Config) -> EmailDecision:
+def classify_with_ai(
+    email: Email,
+    config: Config,
+    event_emitter: Optional["EventEmitter"] = None,
+) -> EmailDecision:
     """Classify email using MLX LLM with structured JSON output.
 
     This is the only non-pure function (has side effect of calling MLX).
@@ -361,7 +369,18 @@ def classify_with_ai(email: Email, config: Config) -> EmailDecision:
     # Strip HTML and truncate symmetrically to preserve footer (unsubscribe links, etc.)
     body_preview = truncate_symmetric(email.body)
 
-    prompt = f"""Classify this email as marketing/promotional or important.
+    # Use chat template for better JSON compliance with instruct models
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a JSON-only API. You MUST respond with ONLY valid JSON. "
+                "No explanations, no reasoning, no markdown - just the JSON object."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"""Classify this email as marketing/promotional or important.
 
 KEEP if:
 - Receipt: "Thank you for your payment (Receipt# 123)", "Invoice #456"
@@ -381,20 +400,34 @@ From: {email.sender}
 Body: {body_preview}
 
 Analyze whether this is marketing/promotional that can be safely deleted.
-Provide your classification (is_marketing: true/false) and confidence (0.0-1.0)."""
+Output format: {{"is_marketing": true, "confidence": 0.95}}""",
+        },
+    ]
 
     try:
-        # Use MLX for inference with JSON schema enforcement
+        # Use MLX for inference with chat template
         response = generate_text(
             model_name=config.model_name,
-            prompt=prompt,
-            max_tokens=50,  # Enough for JSON response
-            json_schema=_AI_CLASSIFICATION_SCHEMA,
+            messages=messages,
+            max_tokens=200,  # Generous buffer for models that add explanatory text
+            event_emitter=event_emitter,
         )
 
         # Parse JSON response
-        # Try to extract JSON from response (in case model adds extra text)
+        # Try to extract JSON from response (in case model adds extra text or markdown)
         response_text = response.strip()
+
+        # Remove markdown code fences if present (```json ... ``` or ``` ... ```)
+        if response_text.startswith("```"):
+            # Find the end of opening fence
+            first_newline = response_text.find("\n")
+            if first_newline != -1:
+                # Remove opening fence
+                response_text = response_text[first_newline + 1 :]
+            # Remove closing fence
+            if response_text.endswith("```"):
+                response_text = response_text[: -len("```")]
+            response_text = response_text.strip()
 
         # Find JSON object in response (handles cases where model adds text)
         json_start = response_text.find("{")
@@ -423,15 +456,30 @@ Provide your classification (is_marketing: true/false) and confidence (0.0-1.0).
             )
         else:
             # No valid JSON found
-            raise ValueError("No valid JSON in response")
+            raise ValueError(
+                f"No valid JSON in response. "
+                f"Response length: {len(response_text)}, "
+                f"First 200 chars: '{response_text[:200]}'"
+            )
 
     except Exception as e:
         # On error, default to KEEP (safe default)
-        import logging
+        error_msg = f"MLX classification failed for email {email.uid}: {e}"
 
-        logging.getLogger(__name__).error(
-            f"MLX classification failed for email {email.uid}: {e}"
-        )
+        if event_emitter:
+            from .ui.events import EventType
+
+            event_emitter.emit(
+                EventType.PROCESSING_ERROR,
+                error_msg,
+                email_uid=email.uid,
+                error=str(e),
+            )
+        else:
+            import logging
+
+            logging.getLogger(__name__).error(error_msg)
+
         return EmailDecision(
             email=email,
             decision=Decision.KEEP,
@@ -719,7 +767,7 @@ def ai_classifier_agent(state: ProcessingState) -> ProcessingState:
             continue
 
         # This email needs AI classification
-        decision = classify_with_ai(email, state.config)
+        decision = classify_with_ai(email, state.config, state.event_emitter)  # type: ignore[attr-defined]
         new_state = new_state.add_decision(decision)
 
     return new_state
@@ -730,21 +778,50 @@ def log_progress_agent(state: ProcessingState) -> ProcessingState:
 
     Pure function (logging is read-only side effect).
     """
-    print("\n=== Batch Progress ===")
-    print(f"Emails in batch: {len(state.emails)}")
-    print(f"Decisions made: {len(state.decisions)}")
-    print(f"Total processed: {state.total_processed}")
-    print(f"Total kept: {state.total_kept}")
-    print(f"Total deleted: {state.total_deleted}")
-    print(f"Consecutive empty batches: {state.consecutive_empty_batches}")
 
-    if state.decisions:
-        print("\n=== Decision Breakdown ===")
-        reason_counts: dict[str, int] = {}
-        for d in state.decisions:
-            reason_counts[d.reason.value] = reason_counts.get(d.reason.value, 0) + 1
-        for reason, count in sorted(reason_counts.items()):
-            print(f"  {reason}: {count}")
+    # Helper to calculate reason counts
+    def _get_reason_counts(decisions: list[EmailDecision]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for d in decisions:
+            counts[d.reason.value] = counts.get(d.reason.value, 0) + 1
+        return counts
+
+    if state.event_emitter:  # type: ignore[attr-defined]
+        from .ui.events import EventType
+
+        # Emit batch progress event
+        state.event_emitter.emit(  # type: ignore[attr-defined]
+            EventType.BATCH_COMPLETE,
+            "Batch Progress",
+            emails_in_batch=len(state.emails),
+            decisions_made=len(state.decisions),
+            total_processed=state.total_processed,
+            total_kept=state.total_kept,
+            total_deleted=state.total_deleted,
+            consecutive_empty_batches=state.consecutive_empty_batches,
+        )
+
+        # Emit decision breakdown if decisions were made
+        if state.decisions:
+            state.event_emitter.emit(  # type: ignore[attr-defined]
+                EventType.SUMMARY,
+                "Decision Breakdown",
+                reason_counts=_get_reason_counts(state.decisions),
+            )
+    else:
+        # Fallback to print for backward compatibility
+        print("\n=== Batch Progress ===")
+        print(f"Emails in batch: {len(state.emails)}")
+        print(f"Decisions made: {len(state.decisions)}")
+        print(f"Total processed: {state.total_processed}")
+        print(f"Total kept: {state.total_kept}")
+        print(f"Total deleted: {state.total_deleted}")
+        print(f"Consecutive empty batches: {state.consecutive_empty_batches}")
+
+        if state.decisions:
+            print("\n=== Decision Breakdown ===")
+            for reason, count in sorted(_get_reason_counts(state.decisions).items()):
+                print(f"  {reason}: {count}")
 
     return state
 

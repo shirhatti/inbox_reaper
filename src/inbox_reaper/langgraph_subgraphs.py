@@ -14,7 +14,6 @@ from collections.abc import Callable
 from typing import cast
 
 from .agents import (
-    _AI_CLASSIFICATION_SCHEMA,
     AIClassificationResponse,
     check_attachments,
     check_keywords,
@@ -466,7 +465,18 @@ async def classify_with_ai_async(email: Email, config: Config) -> EmailDecision:
     # Strip HTML and truncate symmetrically to preserve footer
     body_preview = truncate_symmetric(email.body)
 
-    prompt = f"""Classify this email as marketing/promotional or important.
+    # Use chat template for better JSON compliance with instruct models
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a JSON-only API. You MUST respond with ONLY valid JSON. "
+                "No explanations, no reasoning, no markdown - just the JSON object."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"""Classify this email as marketing/promotional or important.
 
 KEEP if:
 - Receipt: "Thank you for your payment (Receipt# 123)", "Invoice #456"
@@ -486,15 +496,16 @@ From: {email.sender}
 Body: {body_preview}
 
 Analyze whether this is marketing/promotional that can be safely deleted.
-Provide your classification (is_marketing: true/false) and confidence (0.0-1.0)."""
+Output format: {{"is_marketing": true, "confidence": 0.95}}""",
+        },
+    ]
 
     try:
-        # Use async MLX inference with JSON schema enforcement
+        # Use async MLX inference with chat template
         response = await generate_text_async(
             model_name=config.model_name,
-            prompt=prompt,
-            max_tokens=50,  # Enough for JSON response
-            json_schema=_AI_CLASSIFICATION_SCHEMA,
+            messages=messages,
+            max_tokens=200,  # Generous buffer for models that add explanatory text
         )
 
         # Parse JSON response

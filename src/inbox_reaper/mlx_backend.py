@@ -9,7 +9,10 @@ This module provides a clean interface for MLX-based LLM inference with:
 
 import asyncio
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from .ui.events import EventEmitter
 
 # Global model cache to avoid reloading models
 _model_cache: dict[str, tuple[Any, Any]] = {}
@@ -29,7 +32,9 @@ def is_mlx_available() -> bool:
         return False
 
 
-def get_mlx_model(model_name: str) -> tuple[Any, Any]:
+def get_mlx_model(
+    model_name: str, event_emitter: Optional["EventEmitter"] = None
+) -> tuple[Any, Any]:
     """Load MLX model with caching.
 
     Downloads model from Hugging Face if not cached locally.
@@ -38,6 +43,7 @@ def get_mlx_model(model_name: str) -> tuple[Any, Any]:
     Args:
         model_name: Hugging Face model ID
             (e.g., "mlx-community/Llama-3.2-3B-Instruct-4bit")
+        event_emitter: Optional event emitter for progress updates
 
     Returns:
         Tuple of (model, tokenizer)
@@ -56,36 +62,70 @@ def get_mlx_model(model_name: str) -> tuple[Any, Any]:
             "mlx-lm is not installed. Install it with: pip install mlx-lm"
         ) from e
 
-    print(f"Loading MLX model: {model_name}", file=sys.stderr)
-    print(
-        "(First run will download model weights, cached for future use)",
-        file=sys.stderr,
-    )
+    # Emit loading status or fallback to print
+    if event_emitter:
+        from .ui.events import EventType
+
+        event_emitter.emit(
+            EventType.PROCESSING_START,
+            f"Loading MLX model: {model_name}",
+            model=model_name,
+            note="First run will download model weights, cached for future use",
+        )
+    else:
+        print(f"Loading MLX model: {model_name}", file=sys.stderr)
+        print(
+            "(First run will download model weights, cached for future use)",
+            file=sys.stderr,
+        )
 
     try:
         # Request config to get predictable 3-value return, discard it
         model, tokenizer, _ = load(model_name, return_config=True)  # type: ignore[misc]
         _model_cache[model_name] = (model, tokenizer)
-        print(f"✓ Model loaded successfully: {model_name}", file=sys.stderr)
+
+        # Emit success or fallback to print
+        if event_emitter:
+            from .ui.events import EventType
+
+            event_emitter.emit(
+                EventType.PROCESSING_COMPLETE,
+                f"✓ Model loaded successfully: {model_name}",
+                model=model_name,
+            )
+        else:
+            print(f"✓ Model loaded successfully: {model_name}", file=sys.stderr)
+
         return model, tokenizer
     except Exception as e:
-        print(f"✗ Failed to load model {model_name}: {e}", file=sys.stderr)
+        # Emit error or fallback to print
+        if event_emitter:
+            from .ui.events import EventType
+
+            event_emitter.emit(
+                EventType.PROCESSING_ERROR,
+                f"✗ Failed to load model {model_name}: {e}",
+                model=model_name,
+                error=str(e),
+            )
+        else:
+            print(f"✗ Failed to load model {model_name}: {e}", file=sys.stderr)
         raise
 
 
 def generate_text(
     model_name: str,
-    prompt: str,
+    messages: list[dict[str, str]],
     max_tokens: int = 100,
-    json_schema: dict[str, Any] | None = None,
+    event_emitter: Optional["EventEmitter"] = None,
 ) -> str:
-    """Generate text using MLX model (synchronous).
+    """Generate text using MLX model with chat template (synchronous).
 
     Args:
         model_name: Hugging Face model ID
-        prompt: Input prompt for generation
+        messages: Chat messages (list of dicts with 'role' and 'content')
         max_tokens: Maximum tokens to generate
-        json_schema: Optional JSON schema to enforce structured output
+        event_emitter: Optional event emitter for progress updates
 
     Returns:
         Generated text string
@@ -100,49 +140,53 @@ def generate_text(
             "mlx-lm is not installed. Install it with: pip install mlx-lm"
         ) from e
 
-    model, tokenizer = get_mlx_model(model_name)
+    model, tokenizer = get_mlx_model(model_name, event_emitter)
 
-    # If JSON schema provided, augment the prompt
-    final_prompt = prompt
-    if json_schema:
-        import json
+    # Use chat template for instruct models (much better JSON compliance)
+    prompt = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
 
-        schema_str = json.dumps(json_schema, indent=2)
-        final_prompt = f"""{prompt}
-
-You must respond with valid JSON matching this schema:
-{schema_str}
-
-Respond with only the JSON object, no additional text:"""
-
-    # Generate text
+    # Generate text with explicit parameters
+    # Note: MLX generate() returns the completion (without the prompt)
     response = generate(
         model,
         tokenizer,
-        prompt=final_prompt,
+        prompt=prompt,
         max_tokens=max_tokens,
         verbose=False,  # Suppress token-by-token output
     )
 
     # Explicit cast since mlx_lm doesn't have type stubs
-    return str(response)
+    response_str = str(response)
+
+    # Debug logging if response is suspiciously short
+    if len(response_str) < 10:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            f"MLX returned very short response ({len(response_str)} chars): "
+            f"'{response_str}'"
+        )
+
+    return response_str
 
 
 async def generate_text_async(
     model_name: str,
-    prompt: str,
+    messages: list[dict[str, str]],
     max_tokens: int = 100,
-    json_schema: dict[str, Any] | None = None,
+    event_emitter: Optional["EventEmitter"] = None,
 ) -> str:
-    """Generate text using MLX model (asynchronous).
+    """Generate text using MLX model with chat template (asynchronous).
 
     Runs generation in thread pool to avoid blocking event loop.
 
     Args:
         model_name: Hugging Face model ID
-        prompt: Input prompt for generation
+        messages: Chat messages (list of dicts with 'role' and 'content')
         max_tokens: Maximum tokens to generate
-        json_schema: Optional JSON schema to enforce structured output
+        event_emitter: Optional event emitter for progress updates
 
     Returns:
         Generated text string
@@ -157,9 +201,9 @@ async def generate_text_async(
     generate_fn = partial(
         generate_text,
         model_name=model_name,
-        prompt=prompt,
+        messages=messages,
         max_tokens=max_tokens,
-        json_schema=json_schema,
+        event_emitter=event_emitter,
     )
     return await loop.run_in_executor(None, generate_fn)
 
@@ -184,9 +228,9 @@ def download_model(model_name: str) -> bool:
 
         # Run a tiny test to verify it works
         print("\nVerifying model...")
-        test_prompt = "Hello"
-        test_output = generate_text(model_name, test_prompt, max_tokens=5)
-        print(f"Test generation: '{test_prompt}' → '{test_output}'")
+        test_messages = [{"role": "user", "content": "Hello"}]
+        test_output = generate_text(model_name, test_messages, max_tokens=5)
+        print(f"Test generation: 'Hello' → '{test_output}'")
 
         print(f"\n✓ Model downloaded and verified: {model_name}")
         return True
