@@ -470,7 +470,7 @@ class AsyncIMAPClient:
 
             response = await asyncio.wait_for(
                 self.client.uid("fetch", uid_set, "(BODY.PEEK[HEADER])"),
-                timeout=self.timeout
+                timeout=self.timeout,
             )
 
             if response.result != "OK":
@@ -480,14 +480,15 @@ class AsyncIMAPClient:
 
             # Parse the batched response
             # Response format: Multiple FETCH responses, one per email
-            # Each response has the pattern: b'UID FETCH (UID <uid> BODY[HEADER] {size}', bytearray(...), b')'
+            # Pattern: b'UID FETCH (UID <uid> BODY[HEADER] {size}',
+            # bytearray(...), b')'
             current_uid = None
             for line in response.lines:
                 line_str = line.decode() if isinstance(line, bytes) else str(line)
 
                 # Look for UID in the fetch response line
                 if "FETCH" in line_str and "UID" in line_str:
-                    # Extract UID from response like: '6525 FETCH (UID 6525 BODY[HEADER] {1234}'
+                    # Extract UID from response: '6525 FETCH (UID 6525 ...)'
                     parts = line_str.split()
                     for i, part in enumerate(parts):
                         if part == "UID" and i + 1 < len(parts):
@@ -495,7 +496,11 @@ class AsyncIMAPClient:
                             break
 
                 # The header data is in a bytearray
-                elif current_uid and isinstance(line, bytes | bytearray) and len(line) > 100:
+                elif (
+                    current_uid
+                    and isinstance(line, bytes | bytearray)
+                    and len(line) > 100
+                ):
                     try:
                         raw_header = bytes(line)
 
@@ -510,6 +515,7 @@ class AsyncIMAPClient:
                         # Parse date
                         try:
                             from email.utils import parsedate_to_datetime
+
                             email_date = parsedate_to_datetime(date_str)
                         except Exception:
                             email_date = datetime.now()
@@ -523,18 +529,22 @@ class AsyncIMAPClient:
                         current_uid = None  # Reset for next email
 
                     except Exception as e:
-                        logger.warning(f"Error parsing header for UID {current_uid}: {e}")
+                        logger.warning(
+                            f"Error parsing header for UID {current_uid}: {e}"
+                        )
                         current_uid = None
 
             return headers
 
-        except asyncio.TimeoutError:
-            logger.warning(f"Batch fetch timeout, falling back to individual fetches")
+        except TimeoutError:
+            logger.warning("Batch fetch timeout, falling back to individual fetches")
             return await self._fetch_headers_individually(uids)
         except Exception as e:
             raise IMAPConnectionError(f"Failed to fetch headers: {e}") from e
 
-    async def _fetch_headers_individually(self, uids: list[str]) -> dict[str, dict[str, Any]]:
+    async def _fetch_headers_individually(
+        self, uids: list[str]
+    ) -> dict[str, dict[str, Any]]:
         """Fetch headers one at a time as a fallback.
 
         Args:
@@ -549,7 +559,7 @@ class AsyncIMAPClient:
             try:
                 response = await asyncio.wait_for(
                     self.client.uid("fetch", uid, "(BODY.PEEK[HEADER])"),
-                    timeout=self.timeout
+                    timeout=self.timeout,
                 )
 
                 if response.result != "OK":
@@ -580,6 +590,7 @@ class AsyncIMAPClient:
                 # Parse date
                 try:
                     from email.utils import parsedate_to_datetime
+
                     email_date = parsedate_to_datetime(date_str)
                 except Exception:
                     email_date = datetime.now()
@@ -590,7 +601,7 @@ class AsyncIMAPClient:
                     "date": email_date,
                 }
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(f"Timeout fetching headers for UID {uid}")
                 continue
             except Exception as e:
