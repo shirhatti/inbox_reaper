@@ -295,8 +295,8 @@ def remove_base64_images(text: str) -> str:
     # Match data URLs for images: data:image/[type];base64,[base64data]
     # The base64 data consists of A-Za-z0-9+/= characters
     # We match until we hit a quote, whitespace, or < (end of attribute value)
-    pattern = r'data:image/[^;]+;base64,[A-Za-z0-9+/=]+'
-    return re.sub(pattern, '', text)
+    pattern = r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+"
+    return re.sub(pattern, "", text)
 
 
 def strip_html(text: str) -> str:
