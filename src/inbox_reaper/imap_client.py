@@ -62,7 +62,7 @@ class AsyncIMAPClient:
         email_address: str,
         access_token: str,
         provider: str,
-        timeout: int = 30,
+        timeout: int = 120,
     ):
         """Initialize async IMAP client.
 
@@ -70,7 +70,7 @@ class AsyncIMAPClient:
             email_address: User's email address
             access_token: OAuth access token
             provider: Email provider ('gmail' or 'outlook')
-            timeout: Connection timeout in seconds
+            timeout: Connection timeout in seconds (default: 120s for batch operations)
         """
         self.email_address = email_address
         self.access_token = access_token
@@ -464,62 +464,140 @@ class AsyncIMAPClient:
         headers = {}
 
         try:
-            # Fetch headers for each UID
-            for uid in uids:
-                try:
-                    response = await self.client.uid(
-                        "fetch", uid, "(BODY.PEEK[HEADER])"
-                    )
+            # Batch fetch all headers in a single command to reduce round trips
+            # This prevents connection timeouts from multiple sequential requests
+            uid_set = ",".join(uids)
 
-                    if response.result != "OK":
-                        logger.warning(
-                            f"Failed to fetch headers for UID {uid}: {response.result}"
-                        )
-                        continue
+            response = await asyncio.wait_for(
+                self.client.uid("fetch", uid_set, "(BODY.PEEK[HEADER])"),
+                timeout=self.timeout
+            )
 
-                    # Parse header from response
-                    # The header data is in a bytearray, typically the second line
-                    raw_header = None
-                    for line in response.lines:
-                        # The actual header is a bytearray containing the full header
-                        if isinstance(line, bytes | bytearray) and len(line) > 100:
-                            raw_header = bytes(line)
+            if response.result != "OK":
+                logger.warning(f"Batch fetch failed: {response.result}")
+                # Fall back to individual fetches on batch failure
+                return await self._fetch_headers_individually(uids)
+
+            # Parse the batched response
+            # Response format: Multiple FETCH responses, one per email
+            # Each response has the pattern: b'UID FETCH (UID <uid> BODY[HEADER] {size}', bytearray(...), b')'
+            current_uid = None
+            for line in response.lines:
+                line_str = line.decode() if isinstance(line, bytes) else str(line)
+
+                # Look for UID in the fetch response line
+                if "FETCH" in line_str and "UID" in line_str:
+                    # Extract UID from response like: '6525 FETCH (UID 6525 BODY[HEADER] {1234}'
+                    parts = line_str.split()
+                    for i, part in enumerate(parts):
+                        if part == "UID" and i + 1 < len(parts):
+                            current_uid = parts[i + 1]
                             break
 
-                    if not raw_header:
-                        logger.warning(f"No raw_header found for UID {uid}")
-                        continue
-
-                    # Parse with email library
-                    msg = email.message_from_bytes(raw_header)
-
-                    # Extract fields
-                    subject = self._decode_header(msg.get("Subject", ""))
-                    sender = self._decode_header(msg.get("From", ""))
-                    date_str = msg.get("Date", "")
-
-                    # Parse date
+                # The header data is in a bytearray
+                elif current_uid and isinstance(line, bytes | bytearray) and len(line) > 100:
                     try:
-                        from email.utils import parsedate_to_datetime
+                        raw_header = bytes(line)
 
-                        email_date = parsedate_to_datetime(date_str)
-                    except Exception:
-                        email_date = datetime.now()
+                        # Parse with email library
+                        msg = email.message_from_bytes(raw_header)
 
-                    headers[uid] = {
-                        "subject": subject,
-                        "sender": sender,
-                        "date": email_date,
-                    }
+                        # Extract fields
+                        subject = self._decode_header(msg.get("Subject", ""))
+                        sender = self._decode_header(msg.get("From", ""))
+                        date_str = msg.get("Date", "")
 
-                except Exception as e:
-                    logger.warning(f"Error fetching headers for UID {uid}: {e}")
-                    continue
+                        # Parse date
+                        try:
+                            from email.utils import parsedate_to_datetime
+                            email_date = parsedate_to_datetime(date_str)
+                        except Exception:
+                            email_date = datetime.now()
+
+                        headers[current_uid] = {
+                            "subject": subject,
+                            "sender": sender,
+                            "date": email_date,
+                        }
+
+                        current_uid = None  # Reset for next email
+
+                    except Exception as e:
+                        logger.warning(f"Error parsing header for UID {current_uid}: {e}")
+                        current_uid = None
 
             return headers
 
+        except asyncio.TimeoutError:
+            logger.warning(f"Batch fetch timeout, falling back to individual fetches")
+            return await self._fetch_headers_individually(uids)
         except Exception as e:
             raise IMAPConnectionError(f"Failed to fetch headers: {e}") from e
+
+    async def _fetch_headers_individually(self, uids: list[str]) -> dict[str, dict[str, Any]]:
+        """Fetch headers one at a time as a fallback.
+
+        Args:
+            uids: List of email UIDs to fetch headers for
+
+        Returns:
+            Dictionary mapping UID to header dict
+        """
+        headers = {}
+
+        for uid in uids:
+            try:
+                response = await asyncio.wait_for(
+                    self.client.uid("fetch", uid, "(BODY.PEEK[HEADER])"),
+                    timeout=self.timeout
+                )
+
+                if response.result != "OK":
+                    logger.warning(
+                        f"Failed to fetch headers for UID {uid}: {response.result}"
+                    )
+                    continue
+
+                # Parse header from response
+                raw_header = None
+                for line in response.lines:
+                    if isinstance(line, bytes | bytearray) and len(line) > 100:
+                        raw_header = bytes(line)
+                        break
+
+                if not raw_header:
+                    logger.warning(f"No raw_header found for UID {uid}")
+                    continue
+
+                # Parse with email library
+                msg = email.message_from_bytes(raw_header)
+
+                # Extract fields
+                subject = self._decode_header(msg.get("Subject", ""))
+                sender = self._decode_header(msg.get("From", ""))
+                date_str = msg.get("Date", "")
+
+                # Parse date
+                try:
+                    from email.utils import parsedate_to_datetime
+                    email_date = parsedate_to_datetime(date_str)
+                except Exception:
+                    email_date = datetime.now()
+
+                headers[uid] = {
+                    "subject": subject,
+                    "sender": sender,
+                    "date": email_date,
+                }
+
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout fetching headers for UID {uid}")
+                continue
+            except Exception as e:
+                logger.warning(f"Error fetching headers for UID {uid}: {e}")
+                continue
+
+        return headers
 
     async def fetch_bodies(self, uids: list[str]) -> dict[str, dict[str, Any]]:
         """Fetch email bodies for a list of UIDs.
