@@ -6,26 +6,17 @@ from pathlib import Path
 
 import pytest
 
+import yaml
+
 from inbox_reaper.config_loader import (
-    HAS_YAML,
     load_config_file,
     merge_config_with_cli_args,
 )
-
-# Import yaml for YAML-specific errors
-try:
-    import yaml
-except ImportError:
-    yaml = None  # type: ignore[assignment]
-
-# Skip YAML tests if PyYAML is not installed
-requires_yaml = pytest.mark.skipif(not HAS_YAML, reason="PyYAML not installed")
 
 
 class TestLoadConfigFile:
     """Tests for loading configuration files."""
 
-    @requires_yaml
     def test_load_yaml_config(self):
         """Test loading a valid YAML configuration file."""
         # Create temporary YAML file
@@ -58,7 +49,6 @@ whitelist_domains:
         finally:
             Path(temp_path).unlink()
 
-    @requires_yaml
     def test_load_yml_extension(self):
         """Test loading YAML file with .yml extension."""
         config_content = """
@@ -119,7 +109,6 @@ batch_size: 50
         finally:
             Path(temp_path).unlink()
 
-    @requires_yaml
     def test_load_invalid_yaml(self):
         """Test loading an invalid YAML file."""
         # Invalid YAML with unclosed bracket
@@ -132,7 +121,6 @@ keywords: [invalid
             temp_path = f.name
 
         try:
-            assert yaml is not None, "yaml module should be available"
             with pytest.raises(yaml.YAMLError):
                 load_config_file(temp_path)
         finally:
@@ -152,7 +140,6 @@ keywords: [invalid
         finally:
             Path(temp_path).unlink()
 
-    @requires_yaml
     def test_load_yaml_with_null_values(self):
         """Test loading YAML with null values."""
         config_content = """
@@ -192,7 +179,6 @@ batch_size: 50
         finally:
             Path(temp_path).unlink()
 
-    @requires_yaml
     def test_load_yaml_not_dict(self):
         """Test loading YAML that isn't a dictionary."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -221,7 +207,6 @@ batch_size: 50
         finally:
             Path(temp_path).unlink()
 
-    @requires_yaml
     def test_load_empty_yaml(self):
         """Test loading an empty YAML file."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -236,23 +221,6 @@ batch_size: 50
         finally:
             Path(temp_path).unlink()
 
-    @pytest.mark.skipif(HAS_YAML, reason="Only test when PyYAML is not installed")
-    def test_load_yaml_without_pyyaml_installed(self):
-        """Test that proper error is shown when PyYAML is not installed."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write("email: test@example.com")
-            temp_path = f.name
-
-        try:
-            with pytest.raises(ValueError) as exc_info:
-                load_config_file(temp_path)
-
-            assert "YAML support not available" in str(exc_info.value)
-            assert "pip install pyyaml" in str(exc_info.value).lower()
-        finally:
-            Path(temp_path).unlink()
-
-    @requires_yaml
     def test_load_yaml_with_complex_nested_structure(self):
         """Test loading YAML with nested structures."""
         config_content = """
