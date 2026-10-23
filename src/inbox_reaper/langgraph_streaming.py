@@ -30,6 +30,7 @@ from .batch_coordinator import BatchCoordinator
 from .credential_helper import get_credentials, store_credentials
 from .imap_client import AsyncIMAPClient, IMAPConnectionError
 from .oauth_flow import refresh_access_token
+from .rules import RuleLearner, RuleSet
 from .state import Config, Email, EmailDecision
 
 logger = logging.getLogger(__name__)
@@ -42,11 +43,15 @@ TOKEN_REFRESH_MARGIN = timedelta(minutes=5)
 # large attachments.
 MAX_MESSAGES_PER_FETCH = 25
 
-# Deterministic filters, applied in order; the first match wins.
-DETERMINISTIC_FILTERS = (
+# Explicit user intent; always applied first and never overridden by rules.
+HARD_KEEP_FILTERS = (
     check_attachments,
     check_keywords,
     check_whitelist,
+)
+
+# Heuristics applied after learned rules, before AI.
+HEURISTIC_FILTERS = (
     check_transactional_patterns,  # receipts, orders, shipping
     check_marketing_indicators,  # unsubscribe, view in browser
 )
@@ -184,6 +189,7 @@ class StreamingState(TypedDict):
     decision: str | None
     reason: str | None
     config: Config
+    rules: RuleSet | None
 
 
 async def imap_producer(
@@ -237,6 +243,7 @@ async def imap_producer(
                     "decision": None,
                     "reason": None,
                     "config": config,
+                    "rules": None,
                 }
             else:
                 logger.warning(f"Could not fetch email {uid}, skipping")
@@ -273,12 +280,29 @@ async def prefetch[T](source: AsyncGenerator[T], depth: int) -> AsyncIterator[T]
             await task
 
 
-async def classify_email(email: Email, config: Config) -> EmailDecision:
-    """Apply deterministic filters in order, falling back to AI classification."""
-    for check in DETERMINISTIC_FILTERS:
-        decision = check(email, config)
-        if decision:
+def classify_deterministic(
+    email: Email, config: Config, rules: RuleSet | None = None
+) -> EmailDecision | None:
+    """Hard keeps, then learned rules, then heuristics; None if nothing matched."""
+    for check in HARD_KEEP_FILTERS:
+        if decision := check(email, config):
             return decision
+
+    if rules and (decision := rules.decide(email)):
+        return decision
+
+    for check in HEURISTIC_FILTERS:
+        if decision := check(email, config):
+            return decision
+    return None
+
+
+async def classify_email(
+    email: Email, config: Config, rules: RuleSet | None = None
+) -> EmailDecision:
+    """Apply deterministic filters and rules, falling back to AI classification."""
+    if decision := classify_deterministic(email, config, rules):
+        return decision
 
     # classify_with_ai is blocking (MLX inference); run it off the event loop
     # so IMAP prefetching and deletes keep making progress meanwhile.
@@ -296,7 +320,7 @@ async def process_email_node(state: StreamingState) -> StreamingState:
     logger.info(f"Processing email {uid}: {email.subject}")
 
     try:
-        decision_obj = await classify_email(email, state["config"])
+        decision_obj = await classify_email(email, state["config"], state["rules"])
     except Exception as e:
         logger.error(f"Error processing email {uid}: {e}")
         # Safe default: keep the email on error
@@ -337,6 +361,11 @@ async def run_streaming_pipeline(config: Config):
     """Run the streaming pipeline."""
     graph = build_streaming_graph()
 
+    # Load rules up front so a bad file fails before touching the mailbox
+    rules = RuleSet.load(config.rules_path) if config.rules_path else None
+    if rules:
+        logger.info(f"Loaded {len(rules.rules)} rules from {config.rules_path}")
+
     logger.info("Starting streaming pipeline...")
 
     stats = {"processed": 0, "deleted": 0, "kept": 0, "errors": 0}
@@ -367,7 +396,7 @@ async def run_streaming_pipeline(config: Config):
             imap_producer(config, session), depth=prefetch_depth
         ):
             try:
-                result = await graph.ainvoke(initial_state)
+                result = await graph.ainvoke({**initial_state, "rules": rules})
 
                 op = result.get("operation")
                 if op == "delete":
@@ -402,3 +431,52 @@ async def run_streaming_pipeline(config: Config):
     print(f"Errors:          {stats['errors']}")
     print(f"Elapsed:         {elapsed:.1f}s")
     print("=" * 40)
+
+
+async def run_learning_pipeline(
+    config: Config,
+    min_support: int = 3,
+    min_agreement: float = 0.9,
+    use_ai: bool = True,
+) -> RuleSet:
+    """Classify the mailbox read-only and learn sender/domain rules.
+
+    Never mutates the mailbox: there is no delete path here, regardless of
+    ``config.dry_run``. With ``use_ai=False`` only emails matched by the
+    deterministic filters contribute evidence (fast, no model needed).
+    """
+    learner = RuleLearner()
+    started = time.monotonic()
+    skipped = 0
+
+    async with IMAPSession(config.email) as session:
+        prefetch_depth = max(1, min(config.fetch_size, MAX_MESSAGES_PER_FETCH))
+        async for state in prefetch(
+            imap_producer(config, session), depth=prefetch_depth
+        ):
+            email = state["email"]
+            decision: EmailDecision | None
+            try:
+                if use_ai:
+                    decision = await classify_email(email, config)
+                else:
+                    decision = classify_deterministic(email, config)
+            except Exception as e:
+                logger.error(f"Error classifying email {email.uid}: {e}")
+                decision = None
+
+            if decision is None:
+                skipped += 1
+            else:
+                learner.observe(decision)
+
+            seen = learner.observed + skipped
+            if seen % 50 == 0:
+                rate = seen / (time.monotonic() - started)
+                print(f"Classified {seen} emails ({rate:.1f}/s)...")
+
+    if skipped:
+        logger.info(f"{skipped} emails had no decision and were not used")
+    return learner.build(
+        min_support=min_support, min_agreement=min_agreement, account=config.email
+    )

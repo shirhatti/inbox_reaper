@@ -25,6 +25,7 @@ class FilterReason(str, Enum):
     KEYWORD = "keyword"
     WHITELIST = "whitelist"
     SENDER_PATTERN = "sender_pattern"
+    RULE = "rule"  # learned/manual sender or domain rule
     AI_CLASSIFIED = "ai_classified"
     NONE = "none"
 
@@ -102,6 +103,9 @@ class Config(BaseModel):
     # Performance
     enable_pipelining: bool = True
     enable_sender_tracking: bool = True
+
+    # Learned rules file (from `inbox-reaper learn`), applied before AI
+    rules_path: str | None = None
 
     # Safety
     dry_run: bool = True
