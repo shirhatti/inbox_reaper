@@ -12,7 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parseaddr
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -52,7 +52,7 @@ _DETERMINISTIC_KEEP_REASONS = frozenset(
 )
 
 
-class RuleMatch(str, Enum):
+class RuleMatch(StrEnum):
     """What part of the From address a rule matches."""
 
     SENDER = "sender"  # exact address, e.g. deals@e.shop.com

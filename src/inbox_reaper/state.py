@@ -5,12 +5,12 @@ pure functional programming patterns.
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class Decision(str, Enum):
+class Decision(StrEnum):
     """Classification decision for an email."""
 
     KEEP = "keep"
@@ -18,7 +18,7 @@ class Decision(str, Enum):
     UNCERTAIN = "uncertain"
 
 
-class FilterReason(str, Enum):
+class FilterReason(StrEnum):
     """Reason for filtering decision (before AI classification)."""
 
     ATTACHMENT = "attachment"
@@ -148,7 +148,7 @@ class ProcessingState(BaseModel):
 
     def add_decision(self, decision: EmailDecision) -> "ProcessingState":
         """Pure function to add a decision and update counters."""
-        new_decisions = self.decisions + [decision]
+        new_decisions = [*self.decisions, decision]
         new_processed_uids = self.processed_uids | {decision.email.uid}
 
         # Update sender stats
@@ -183,7 +183,7 @@ class ProcessingState(BaseModel):
 
     def add_error(self, error: str) -> "ProcessingState":
         """Pure function to add an error."""
-        return self.model_copy(update={"errors": self.errors + [error]})
+        return self.model_copy(update={"errors": [*self.errors, error]})
 
     def update_batch(self, emails: list[Email]) -> "ProcessingState":
         """Pure function to update current batch and pagination."""

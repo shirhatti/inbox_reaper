@@ -145,9 +145,8 @@ def should_fetch_bodies(state: GraphState) -> Literal["fetch_bodies", "skip_bodi
             f"[should_fetch_bodies] Need to fetch {len(needs_full_fetch)} email bodies"
         )
         return "fetch_bodies"
-    else:
-        print("[should_fetch_bodies] No emails need AI classification, skipping")
-        return "skip_bodies"
+    print("[should_fetch_bodies] No emails need AI classification, skipping")
+    return "skip_bodies"
 
 
 def batch_fetch_bodies(state: GraphState) -> GraphState:

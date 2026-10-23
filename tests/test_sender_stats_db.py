@@ -489,7 +489,7 @@ class TestThreadSafety:
 
         # Verify all bulk updates succeeded
         stats = db.load_all_stats()
-        assert len(stats) == 50  # 5 batches × 10 senders
+        assert len(stats) == 50  # 5 batches x 10 senders
 
     def test_concurrent_reads_and_writes(self, db):
         """Test concurrent read and write operations."""

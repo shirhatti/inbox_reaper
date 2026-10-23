@@ -122,13 +122,11 @@ async def create_imap_client(email: str) -> AsyncIMAPClient:
         logger.warning(f"Could not refresh token: {e}, using existing token")
 
     # Create and return async client
-    client = AsyncIMAPClient(
+    return AsyncIMAPClient(
         email_address=email,
         access_token=creds["access_token"],
         provider=creds["provider"],
     )
-
-    return client
 
 
 class IMAPSession:
@@ -322,13 +320,13 @@ async def process_email_node(state: StreamingState) -> StreamingState:
     try:
         decision_obj = await classify_email(email, state["config"], state["rules"])
     except Exception as e:
-        logger.error(f"Error processing email {uid}: {e}")
+        logger.exception(f"Error processing email {uid}: {e}")
         # Safe default: keep the email on error
         return {
             **state,
             "operation": "keep",
             "decision": "keep",
-            "reason": f"error: {str(e)}",
+            "reason": f"error: {e!s}",
         }
 
     logger.info(
@@ -382,7 +380,7 @@ async def run_streaming_pipeline(config: Config):
             try:
                 await session.run(lambda client: client.delete_emails(uids))
             except Exception as e:
-                logger.error(f"Error deleting emails: {e}")
+                logger.exception(f"Error deleting emails: {e}")
 
         batch_coordinator = BatchCoordinator(
             processor=execute_deletes,
@@ -414,7 +412,7 @@ async def run_streaming_pipeline(config: Config):
                     print(f"Processed {stats['processed']} emails ({rate:.1f}/s)...")
 
             except Exception as e:
-                logger.error(f"Error processing email: {e}")
+                logger.exception(f"Error processing email: {e}")
                 stats["errors"] += 1
 
         # Flush remaining deletes
@@ -462,7 +460,7 @@ async def run_learning_pipeline(
                 else:
                     decision = classify_deterministic(email, config)
             except Exception as e:
-                logger.error(f"Error classifying email {email.uid}: {e}")
+                logger.exception(f"Error classifying email {email.uid}: {e}")
                 decision = None
 
             if decision is None:

@@ -9,6 +9,7 @@ This module handles OAuth 2.0 authentication flows:
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -25,7 +26,7 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
     auth_code: str | None = None
     error: str | None = None
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         """Handle GET request from OAuth redirect."""
         # Parse the query parameters
         query_components = parse_qs(urlparse(self.path).query)
@@ -73,7 +74,6 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         """Suppress log messages."""
-        pass
 
 
 def _perform_redirect_flow(email: str, provider: str, config: dict) -> dict:
@@ -143,13 +143,14 @@ def _perform_redirect_flow(email: str, provider: str, config: dict) -> dict:
     )
 
     # Exchange authorization code for tokens (authlib handles PKCE automatically)
-    tokens = session.fetch_token(
-        config["token_uri"],
-        authorization_response=authorization_response,
-        code_verifier=code_verifier,
+    return cast(
+        dict,
+        session.fetch_token(
+            config["token_uri"],
+            authorization_response=authorization_response,
+            code_verifier=code_verifier,
+        ),
     )
-
-    return tokens  # type: ignore[no-any-return]
 
 
 def _perform_device_code_flow(email: str, provider: str, config: dict) -> dict:
@@ -222,17 +223,16 @@ def _perform_device_code_flow(email: str, provider: str, config: dict) -> dict:
                 # User hasn't completed authentication yet, keep polling
                 print(".", end="", flush=True)
                 continue
-            elif error == "slow_down":
+            if error == "slow_down":
                 # We're polling too fast, increase interval
                 interval += 5
                 continue
-            elif error == "authorization_declined":
+            if error == "authorization_declined":
                 raise RuntimeError("User declined authorization")
-            elif error == "expired_token":
+            if error == "expired_token":
                 raise RuntimeError("Device code expired")
-            else:
-                error_desc = token_json.get("error_description", "")
-                raise RuntimeError(f"OAuth error: {error} - {error_desc}")
+            error_desc = token_json.get("error_description", "")
+            raise RuntimeError(f"OAuth error: {error} - {error_desc}")
 
         # Success! We have tokens
         if "access_token" in token_json:
@@ -266,10 +266,9 @@ def perform_oauth_flow(email: str, provider: str) -> dict:
 
     if flow_type == "redirect":
         return _perform_redirect_flow(email, provider, config)
-    elif flow_type == "device_code":
+    if flow_type == "device_code":
         return _perform_device_code_flow(email, provider, config)
-    else:
-        raise ValueError(f"Unknown flow type: {flow_type}")
+    raise ValueError(f"Unknown flow type: {flow_type}")
 
 
 def refresh_access_token(refresh_token: str, provider: str) -> dict:
@@ -295,26 +294,27 @@ def refresh_access_token(refresh_token: str, provider: str) -> dict:
             client_secret=config.get("client_secret"),
             token={"refresh_token": refresh_token},
         )
-        tokens = session.refresh_token(config["token_uri"], refresh_token=refresh_token)
-        return tokens  # type: ignore[no-any-return]
+        return cast(
+            dict,
+            session.refresh_token(config["token_uri"], refresh_token=refresh_token),
+        )
 
     # Use simple requests for device code flow providers (Outlook)
-    else:
-        token_data = {
-            "grant_type": "refresh_token",
-            "client_id": config["client_id"],
-            "refresh_token": refresh_token,
-        }
+    token_data = {
+        "grant_type": "refresh_token",
+        "client_id": config["client_id"],
+        "refresh_token": refresh_token,
+    }
 
-        # Add client_secret if available
-        if config.get("client_secret"):
-            token_data["client_secret"] = config["client_secret"]
+    # Add client_secret if available
+    if config.get("client_secret"):
+        token_data["client_secret"] = config["client_secret"]
 
-        # Request new tokens
-        response = requests.post(config["token_uri"], data=token_data)
-        response.raise_for_status()
+    # Request new tokens
+    response = requests.post(config["token_uri"], data=token_data)
+    response.raise_for_status()
 
-        return response.json()  # type: ignore[no-any-return]
+    return response.json()  # type: ignore[no-any-return]
 
 
 async def verify_imap_connection(
@@ -341,10 +341,10 @@ async def verify_imap_connection(
 
     except IMAPAuthError as e:
         # Authentication failed - token may need refresh
-        return False, f"Authentication failed (token may need refresh): {str(e)}"
+        return False, f"Authentication failed (token may need refresh): {e!s}"
     except IMAPConnectionError as e:
         # Connection failed
-        return False, f"Connection failed: {str(e)}"
+        return False, f"Connection failed: {e!s}"
     except Exception as e:
         # Unexpected error
-        return False, f"Unexpected error: {str(e)}"
+        return False, f"Unexpected error: {e!s}"

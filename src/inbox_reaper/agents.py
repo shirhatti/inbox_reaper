@@ -204,15 +204,18 @@ def check_transactional_patterns(email: Email, config: Config) -> EmailDecision 
             )
 
     # Pattern 4: Personal emails (gmail, outlook from individuals)
-    if any(domain in sender_lower for domain in _PERSONAL_DOMAINS):
-        # Check if it's not automated (no "noreply", "no-reply")
-        if "noreply" not in sender_lower and "no-reply" not in sender_lower:
-            return EmailDecision(
-                email=email,
-                decision=Decision.KEEP,
-                reason=FilterReason.WHITELIST,
-                confidence=0.85,
-            )
+    # ...unless automated ("noreply", "no-reply")
+    if (
+        any(domain in sender_lower for domain in _PERSONAL_DOMAINS)
+        and "noreply" not in sender_lower
+        and "no-reply" not in sender_lower
+    ):
+        return EmailDecision(
+            email=email,
+            decision=Decision.KEEP,
+            reason=FilterReason.WHITELIST,
+            confidence=0.85,
+        )
 
     return None
 
@@ -342,8 +345,7 @@ Output format: {{"is_marketing": true, "confidence": 0.95}}""",
                 # Remove opening fence
                 response_text = response_text[first_newline + 1 :]
             # Remove closing fence
-            if response_text.endswith("```"):
-                response_text = response_text[: -len("```")]
+            response_text = response_text.removesuffix("```")
             response_text = response_text.strip()
 
         # Find JSON object in response (handles cases where model adds text)
@@ -371,13 +373,12 @@ Output format: {{"is_marketing": true, "confidence": 0.95}}""",
                 reason=FilterReason.AI_CLASSIFIED,
                 confidence=classification.confidence,
             )
-        else:
-            # No valid JSON found
-            raise ValueError(
-                f"No valid JSON in response. "
-                f"Response length: {len(response_text)}, "
-                f"First 200 chars: '{response_text[:200]}'"
-            )
+        # No valid JSON found
+        raise ValueError(
+            f"No valid JSON in response. "
+            f"Response length: {len(response_text)}, "
+            f"First 200 chars: '{response_text[:200]}'"
+        )
 
     except Exception as e:
         # On error, default to KEEP (safe default)
@@ -393,7 +394,8 @@ Output format: {{"is_marketing": true, "confidence": 0.95}}""",
                 error=str(e),
             )
         else:
-            logger.error(error_msg)
+            # Malformed model output is expected occasionally; no traceback
+            logger.error(error_msg)  # noqa: TRY400
 
         return EmailDecision(
             email=email,

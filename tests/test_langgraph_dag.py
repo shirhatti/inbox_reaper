@@ -9,8 +9,9 @@ This module tests:
 """
 
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph
 from langgraph.types import Send
 
@@ -352,10 +353,20 @@ class TestUpdateCheckpoint:
         assert result["total_kept"] == 5
 
 
+def mock_sqlite_saver() -> MagicMock:
+    """SqliteSaver stand-in whose context manager yields a real in-memory saver.
+
+    LangGraph >= 1.2 rejects checkpointers that are not BaseCheckpointSaver.
+    """
+    saver = MagicMock()
+    saver.from_conn_string.return_value.__enter__.return_value = InMemorySaver()
+    return saver
+
+
 class TestBuildLangGraph:
     """Test the build_langgraph function."""
 
-    @patch("inbox_reaper.langgraph_dag.SqliteSaver")
+    @patch("inbox_reaper.langgraph_dag.SqliteSaver", new_callable=mock_sqlite_saver)
     def test_build_langgraph_creates_compiled_graph(self, mock_saver):
         """Test that build_langgraph returns a compiled graph."""
         config = Config()
@@ -366,7 +377,7 @@ class TestBuildLangGraph:
         assert graph is not None
         assert not isinstance(graph, StateGraph)
 
-    @patch("inbox_reaper.langgraph_dag.SqliteSaver")
+    @patch("inbox_reaper.langgraph_dag.SqliteSaver", new_callable=mock_sqlite_saver)
     def test_build_langgraph_uses_checkpoint_path(self, mock_saver):
         """Test that build_langgraph uses provided checkpoint path."""
         config = Config()
@@ -376,7 +387,7 @@ class TestBuildLangGraph:
 
         mock_saver.from_conn_string.assert_called_once_with(checkpoint_path)
 
-    @patch("inbox_reaper.langgraph_dag.SqliteSaver")
+    @patch("inbox_reaper.langgraph_dag.SqliteSaver", new_callable=mock_sqlite_saver)
     def test_build_langgraph_default_checkpoint_path(self, mock_saver):
         """Test that build_langgraph uses default checkpoint path."""
         config = Config()
@@ -389,7 +400,7 @@ class TestBuildLangGraph:
 class TestGraphStructure:
     """Test the overall graph structure and flow."""
 
-    @patch("inbox_reaper.langgraph_dag.SqliteSaver")
+    @patch("inbox_reaper.langgraph_dag.SqliteSaver", new_callable=mock_sqlite_saver)
     def test_graph_has_all_required_nodes(self, mock_saver):
         """Test that graph includes all required nodes."""
         config = Config()

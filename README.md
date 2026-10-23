@@ -54,12 +54,12 @@ uv sync
 ```
 
 **Dependencies:**
-- `langgraph>=0.2.0` - Graph orchestration with checkpointing
-- `mlx-lm>=0.21.0` - Local LLM inference optimized for Apple Silicon
-- `pydantic>=2.0.0` - Type-safe state models
-- `authlib>=1.3.0` - OAuth 2.0 authentication
-- `keyring>=25.0.0` - Secure credential storage
-- `click>=8.1.0` - CLI framework
+- `langgraph>=1.2` - Graph orchestration with checkpointing
+- `mlx-lm>=0.32` - Local LLM inference optimized for Apple Silicon
+- `pydantic>=2.14` - Type-safe state models
+- `authlib>=1.9` - OAuth 2.0 authentication
+- `keyring>=25.7` - Secure credential storage
+- `click>=8.5` - CLI framework
 
 **Note**: This tool is optimized for **macOS with Apple Silicon** (M1/M2/M3/M4/M5). MLX provides native GPU acceleration on Apple hardware.
 
@@ -145,6 +145,37 @@ inbox-reaper process --email user@gmail.com \
 inbox-reaper process --email user@gmail.com \
   --concurrent-limit 50 --batch-size 200
 ```
+
+### Learned Rules (review before deleting)
+
+`learn` classifies your inbox **read-only** and writes deterministic sender/domain
+rules you can review and edit. `process --rules` then applies them after the
+attachment/keyword/whitelist checks (which a rule can never override) and before
+heuristics and AI.
+
+```bash
+# Read-only: never deletes, regardless of --dry-run
+inbox-reaper learn --email user@gmail.com -o rules.json
+inbox-reaper learn --email user@gmail.com --no-ai   # fast, deterministic signals only
+
+# Review/edit rules.json, then apply
+inbox-reaper process --email user@gmail.com --rules rules.json
+```
+
+A rule is learned only when a sender (or domain) has at least `--min-support`
+emails (default 3) and `--min-agreement` of them agree (default 90%). Any email
+kept by an attachment, keyword or whitelist check blocks a delete rule for that
+sender. Domain rules need two or more senders, are never learned for free-mail
+domains such as gmail.com, and are dropped if a sender rule on that domain
+disagrees. Each entry looks like:
+
+```json
+{"match": "domain", "value": "e.shop.com", "action": "delete",
+ "support": 42, "agreement": 1.0, "source": "learned"}
+```
+
+Delete an entry to drop it, flip `action`, or add your own with `"source": "manual"`.
+Sender rules take precedence over domain rules; domain rules also cover subdomains.
 
 ### Configuration Files
 
@@ -359,20 +390,20 @@ For detailed architecture documentation, see:
 
 ```bash
 # Install dependencies and set up pre-commit hooks automatically
-uv sync --extra dev
+uv sync
 uv run setup-dev
 ```
 
 This will:
 - Install all development dependencies
-- Set up pre-commit hooks (runs ruff, black, mypy automatically)
+- Set up pre-commit hooks (runs ruff and mypy automatically)
 - Verify your environment is ready
 
 ### Manual Setup
 
 ```bash
 # Install development dependencies
-uv sync --extra dev
+uv sync
 
 # Install pre-commit hooks manually
 uv run pre-commit install
@@ -392,7 +423,6 @@ uv run pre-commit run --all-files
 # Individual tool commands (optional)
 ruff check src/          # Lint
 ruff format src/         # Format
-black src/               # Additional formatting
 mypy src/                # Type check
 pytest                   # Run tests
 ```

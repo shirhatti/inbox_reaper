@@ -224,7 +224,7 @@ def download_model(model_name: str) -> bool:
         print("This may take a few minutes depending on model size...")
 
         # Loading the model will trigger download if not cached
-        model, tokenizer = get_mlx_model(model_name)
+        _model, _tokenizer = get_mlx_model(model_name)
 
         # Run a tiny test to verify it works
         print("\nVerifying model...")

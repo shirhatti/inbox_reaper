@@ -79,20 +79,15 @@ def generate_xoauth2_string(email: str, access_token: str) -> str:
     Returns:
         Raw XOAUTH2 string (not base64-encoded, as aioimaplib will encode it)
     """
-    auth_string = f"user={email}\x01auth=Bearer {access_token}\x01\x01"
-    return auth_string
+    return f"user={email}\x01auth=Bearer {access_token}\x01\x01"
 
 
 class IMAPAuthError(Exception):
     """Raised when IMAP authentication fails."""
 
-    pass
-
 
 class IMAPConnectionError(Exception):
     """Raised when IMAP connection fails."""
-
-    pass
 
 
 class AsyncIMAPClient:

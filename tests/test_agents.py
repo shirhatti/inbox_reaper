@@ -20,7 +20,7 @@ class TestRemoveBase64Images:
         result = remove_base64_images(text)
         assert base64_png not in result
         assert "data:image" not in result
-        assert '<img src="">' == result
+        assert result == '<img src="">'
 
     def test_removes_jpeg_base64_image(self):
         """Test removal of JPEG base64 encoded image."""

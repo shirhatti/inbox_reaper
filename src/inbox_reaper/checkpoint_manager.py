@@ -301,14 +301,13 @@ class CheckpointManager:
         """
         if seconds < 60:
             return f"{int(seconds)}s"
-        elif seconds < 3600:
+        if seconds < 3600:
             minutes = int(seconds / 60)
             secs = int(seconds % 60)
             return f"{minutes}m {secs}s"
-        else:
-            hours = int(seconds / 3600)
-            minutes = int((seconds % 3600) / 60)
-            return f"{hours}h {minutes}m"
+        hours = int(seconds / 3600)
+        minutes = int((seconds % 3600) / 60)
+        return f"{hours}h {minutes}m"
 
     def display_summary(self, state: GraphState) -> None:
         """Display final processing summary.
@@ -421,8 +420,7 @@ class CheckpointManager:
                     True,
                     "Checkpoint integrity verified (with LangGraph checkpoints)",
                 )
-            else:
-                return True, "Checkpoint integrity verified (watermark only)"
+            return True, "Checkpoint integrity verified (watermark only)"
 
         except sqlite3.Error as e:
             return False, f"Database error: {e}"

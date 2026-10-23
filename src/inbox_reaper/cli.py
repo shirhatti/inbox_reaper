@@ -6,6 +6,7 @@ Provides a Click-based command-line interface for the email classification syste
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import click
@@ -38,7 +39,6 @@ def cli():
     a multi-layer decision pipeline to efficiently classify and optionally
     delete marketing emails.
     """
-    pass
 
 
 def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
@@ -582,8 +582,7 @@ Date: {email_data["date"]}
                 output_path = output or f"email_{uid}.eml"
 
                 # Save to file
-                with open(output_path, "w", encoding="utf-8") as f:
-                    f.write(eml_content)
+                Path(output_path).write_text(eml_content, encoding="utf-8")
 
                 click.echo(f"✓ Email saved to {output_path}")
                 click.echo(f"  Size: {len(eml_content)} bytes")

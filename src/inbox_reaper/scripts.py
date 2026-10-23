@@ -43,7 +43,7 @@ def setup_dev():
     except FileNotFoundError:
         print(
             "❌ Error: uv or pre-commit not found. "
-            "Install dev dependencies first: uv pip install -e '.[dev]'"
+            "Install dev dependencies first: uv sync"
         )
         sys.exit(1)
     except subprocess.CalledProcessError as e:
