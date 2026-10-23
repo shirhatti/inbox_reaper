@@ -10,15 +10,63 @@ This module provides native async IMAP operations with:
 import asyncio
 import email
 import logging
+import re
 from datetime import datetime
 from email.header import decode_header
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import aioimaplib
 
 from .state import Email
+from .text_utils import truncate_symmetric
 
 logger = logging.getLogger(__name__)
+
+_FETCH_UID_RE = re.compile(r"\bUID (\d+)")
+
+# Plain-text body length kept per email. Symmetric truncation keeps both the
+# opening and the footer (where unsubscribe links live).
+MAX_BODY_CHARS = 4000
+
+
+def parse_fetch_literals(lines: list[Any]) -> dict[str, bytes]:
+    """Map UID -> literal payload from a (possibly multi-message) UID FETCH response.
+
+    aioimaplib returns literals as ``bytearray`` and every other line as ``bytes``.
+    Servers may report the UID before the literal (Gmail) or after it in the
+    trailing line (some Exchange servers), so both orders are handled.
+    """
+    results: dict[str, bytes] = {}
+    uid: str | None = None
+    literal: bytes | None = None
+
+    for line in lines:
+        if isinstance(line, bytearray):
+            literal = bytes(line)
+            if uid is not None:
+                results[uid] = literal
+                uid, literal = None, None
+            continue
+
+        text = line.decode(errors="replace") if isinstance(line, bytes) else str(line)
+        match = _FETCH_UID_RE.search(text)
+        if " FETCH " in f" {text} ":
+            # Start of a new message's response
+            uid = match.group(1) if match else None
+            literal = None
+        elif match and literal is not None:
+            results[match.group(1)] = literal
+            uid, literal = None, None
+
+    return results
+
+
+def _parse_date(date_str: str) -> datetime:
+    try:
+        return parsedate_to_datetime(date_str)
+    except Exception:
+        return datetime.now()
 
 
 def generate_xoauth2_string(email: str, access_token: str) -> str:
@@ -222,90 +270,109 @@ class AsyncIMAPClient:
             if not all_uids:
                 return []
 
-            # Fetch emails
-            emails = []
-            for uid in all_uids:
-                try:
-                    email_obj = await self._fetch_single_email(uid, mark_seen)
-                    if email_obj:
-                        emails.append(email_obj)
-                except Exception as e:
-                    logger.warning(f"Failed to fetch email UID {uid}: {e}")
-                    continue
-
-            return emails
+            messages = await self.fetch_messages(all_uids, mark_seen=mark_seen)
+            return [messages[uid] for uid in all_uids if uid in messages]
 
         except Exception as e:
             raise IMAPConnectionError(f"Failed to fetch emails: {e}") from e
 
-    async def _fetch_single_email(
-        self, uid: str, mark_seen: bool = False
-    ) -> Email | None:
-        """Fetch a single email by UID.
+    async def fetch_messages(
+        self, uids: list[str], mark_seen: bool = False
+    ) -> dict[str, Email]:
+        """Fetch and parse full messages for many UIDs in a single round trip.
+
+        Falls back to one FETCH per UID if the server rejects the batched command.
 
         Args:
-            uid: Email UID
+            uids: Email UIDs to fetch
             mark_seen: Whether to mark as seen
 
         Returns:
-            Email object or None if fetch fails
+            Dictionary mapping UID to Email (UIDs that failed are omitted)
+
+        Raises:
+            IMAPConnectionError: If not connected or the batch fetch times out
+                (the connection is likely dead, so per-UID retries would stall)
         """
         if not self.client:
             raise IMAPConnectionError("Not connected to IMAP server")
 
+        if not uids:
+            return {}
+
         # Use BODY.PEEK to avoid marking as seen, or BODY to mark as seen
         fetch_command = "BODY[]" if mark_seen else "BODY.PEEK[]"
 
-        response = await self.client.uid("fetch", uid, f"({fetch_command})")
+        try:
+            response = await asyncio.wait_for(
+                self.client.uid("fetch", ",".join(uids), f"(UID {fetch_command})"),
+                timeout=self.timeout,
+            )
+        except TimeoutError as e:
+            raise IMAPConnectionError(
+                f"Timed out after {self.timeout}s fetching {len(uids)} messages"
+            ) from e
 
         if response.result != "OK":
-            logger.warning(f"Failed to fetch UID {uid}: {response.lines}")
-            return None
+            logger.warning("Batch message fetch failed, fetching individually")
+            return await self._fetch_messages_individually(uids, fetch_command)
 
-        # Parse email message
-        # Response format: [b'UID FETCH (... BODY[] {size}', bytearray(...), b')']
-        # The actual email data is in a bytearray
-        raw_email = None
-        for line in response.lines:
-            # The email body is typically a large bytearray
-            if isinstance(line, bytes | bytearray) and len(line) > 100:
-                raw_email = bytes(line)
-                break
+        return self._parse_messages(parse_fetch_literals(response.lines))
 
-        if not raw_email:
-            logger.warning(f"No email data found for UID {uid}")
-            return None
+    async def _fetch_messages_individually(
+        self, uids: list[str], fetch_command: str
+    ) -> dict[str, Email]:
+        """Fetch messages one UID at a time as a fallback."""
+        assert self.client is not None
+        messages: dict[str, Email] = {}
 
-        # Parse with email library
+        for uid in uids:
+            try:
+                response = await asyncio.wait_for(
+                    self.client.uid("fetch", uid, f"(UID {fetch_command})"),
+                    timeout=self.timeout,
+                )
+                if response.result != "OK":
+                    logger.warning(f"Failed to fetch UID {uid}: {response.lines}")
+                    continue
+                literals = parse_fetch_literals(response.lines)
+                if uid not in literals and len(literals) == 1:
+                    # Single-message response without a parseable UID
+                    literals = {uid: next(iter(literals.values()))}
+                messages.update(self._parse_messages(literals))
+            except Exception as e:
+                logger.warning(f"Failed to fetch email UID {uid}: {e}")
+
+        return messages
+
+    def _parse_messages(self, raw_messages: dict[str, bytes]) -> dict[str, Email]:
+        messages: dict[str, Email] = {}
+        for uid, raw in raw_messages.items():
+            try:
+                messages[uid] = self._parse_message(uid, raw)
+            except Exception as e:
+                logger.warning(f"Error parsing email UID {uid}: {e}")
+        return messages
+
+    def _parse_message(self, uid: str, raw_email: bytes) -> Email:
         msg = email.message_from_bytes(raw_email)
-
-        # Extract fields
-        subject = self._decode_header(msg.get("Subject", ""))
-        sender = self._decode_header(msg.get("From", ""))
-        date_str = msg.get("Date", "")
-
-        # Parse date
-        try:
-            from email.utils import parsedate_to_datetime
-
-            email_date = parsedate_to_datetime(date_str)
-        except Exception:
-            email_date = datetime.now()
-
-        # Extract body
-        body = self._extract_body(msg)
-
-        # Extract attachments
-        attachments = self._extract_attachments(msg)
-
         return Email(
             uid=uid,
-            subject=subject,
-            sender=sender,
-            body=body,
-            date=email_date,
-            attachments=attachments,
+            subject=self._decode_header(msg.get("Subject", "")),
+            sender=self._decode_header(msg.get("From", "")),
+            body=self._extract_body(msg),
+            date=_parse_date(msg.get("Date", "")),
+            attachments=self._extract_attachments(msg),
+            has_list_unsubscribe="List-Unsubscribe" in msg,
         )
+
+    def _parse_header_fields(self, raw_header: bytes) -> dict[str, Any]:
+        msg = email.message_from_bytes(raw_header)
+        return {
+            "subject": self._decode_header(msg.get("Subject", "")),
+            "sender": self._decode_header(msg.get("From", "")),
+            "date": _parse_date(msg.get("Date", "")),
+        }
 
     def _decode_header(self, header: str | None) -> str:
         """Decode email header that may contain encoded words.
@@ -333,10 +400,23 @@ class AsyncIMAPClient:
 
         return "".join(decoded_parts)
 
-    def _extract_body(self, msg: email.message.Message) -> str:
-        """Extract email body from message.
+    @staticmethod
+    def _decode_part(part: email.message.Message) -> str:
+        payload = part.get_payload(decode=True)
+        if not payload or not isinstance(payload, bytes):
+            return ""
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            return payload.decode(charset, errors="replace")
+        except LookupError:
+            # Unknown charset label
+            return payload.decode("utf-8", errors="replace")
 
-        Prefers text/plain, falls back to text/html.
+    def _extract_body(self, msg: email.message.Message) -> str:
+        """Extract email body from message as plain text.
+
+        Prefers text/plain, falls back to text/html (stripped to text), and
+        truncates symmetrically so both the start and the footer are kept.
 
         Args:
             msg: Email message
@@ -347,41 +427,29 @@ class AsyncIMAPClient:
         body = ""
 
         if msg.is_multipart():
-            # Try to find text/plain first
-            for part in msg.walk():
-                content_type = part.get_content_type()
-                if content_type == "text/plain":
+            # Try text/plain first, then fall back to text/html
+            for wanted in ("text/plain", "text/html"):
+                for part in msg.walk():
+                    if part.get_content_type() != wanted:
+                        continue
+                    if part.get_content_disposition() == "attachment":
+                        continue
                     try:
-                        payload = part.get_payload(decode=True)
-                        if payload and isinstance(payload, bytes):
-                            body = payload.decode("utf-8", errors="replace")
-                            break
+                        body = self._decode_part(part)
                     except Exception:
                         continue
-
-            # Fall back to text/html if no text/plain found
-            if not body:
-                for part in msg.walk():
-                    content_type = part.get_content_type()
-                    if content_type == "text/html":
-                        try:
-                            payload = part.get_payload(decode=True)
-                            if payload and isinstance(payload, bytes):
-                                body = payload.decode("utf-8", errors="replace")
-                                break
-                        except Exception:
-                            continue
+                    if body:
+                        break
+                if body:
+                    break
         else:
             # Not multipart - get payload directly
             try:
-                payload = msg.get_payload(decode=True)
-                if payload and isinstance(payload, bytes):
-                    body = payload.decode("utf-8", errors="replace")
+                body = self._decode_part(msg)
             except Exception:
                 body = str(msg.get_payload())
 
-        # Truncate to first 1000 chars as per DESIGN.md
-        return body[:1000]
+        return truncate_symmetric(body, MAX_BODY_CHARS)
 
     def _extract_attachments(self, msg: email.message.Message) -> list[str]:
         """Extract attachment filenames from message.
@@ -469,7 +537,7 @@ class AsyncIMAPClient:
             uid_set = ",".join(uids)
 
             response = await asyncio.wait_for(
-                self.client.uid("fetch", uid_set, "(BODY.PEEK[HEADER])"),
+                self.client.uid("fetch", uid_set, "(UID BODY.PEEK[HEADER])"),
                 timeout=self.timeout,
             )
 
@@ -478,61 +546,11 @@ class AsyncIMAPClient:
                 # Fall back to individual fetches on batch failure
                 return await self._fetch_headers_individually(uids)
 
-            # Parse the batched response
-            # Response format: Multiple FETCH responses, one per email
-            # Pattern: b'UID FETCH (UID <uid> BODY[HEADER] {size}',
-            # bytearray(...), b')'
-            current_uid = None
-            for line in response.lines:
-                line_str = line.decode() if isinstance(line, bytes) else str(line)
-
-                # Look for UID in the fetch response line
-                if "FETCH" in line_str and "UID" in line_str:
-                    # Extract UID from response: '6525 FETCH (UID 6525 ...)'
-                    parts = line_str.split()
-                    for i, part in enumerate(parts):
-                        if part == "UID" and i + 1 < len(parts):
-                            current_uid = parts[i + 1]
-                            break
-
-                # The header data is in a bytearray
-                elif (
-                    current_uid
-                    and isinstance(line, bytes | bytearray)
-                    and len(line) > 100
-                ):
-                    try:
-                        raw_header = bytes(line)
-
-                        # Parse with email library
-                        msg = email.message_from_bytes(raw_header)
-
-                        # Extract fields
-                        subject = self._decode_header(msg.get("Subject", ""))
-                        sender = self._decode_header(msg.get("From", ""))
-                        date_str = msg.get("Date", "")
-
-                        # Parse date
-                        try:
-                            from email.utils import parsedate_to_datetime
-
-                            email_date = parsedate_to_datetime(date_str)
-                        except Exception:
-                            email_date = datetime.now()
-
-                        headers[current_uid] = {
-                            "subject": subject,
-                            "sender": sender,
-                            "date": email_date,
-                        }
-
-                        current_uid = None  # Reset for next email
-
-                    except Exception as e:
-                        logger.warning(
-                            f"Error parsing header for UID {current_uid}: {e}"
-                        )
-                        current_uid = None
+            for uid, raw_header in parse_fetch_literals(response.lines).items():
+                try:
+                    headers[uid] = self._parse_header_fields(raw_header)
+                except Exception as e:
+                    logger.warning(f"Error parsing header for UID {uid}: {e}")
 
             return headers
 
@@ -571,38 +589,13 @@ class AsyncIMAPClient:
                     )
                     continue
 
-                # Parse header from response
-                raw_header = None
-                for line in response.lines:
-                    if isinstance(line, bytes | bytearray) and len(line) > 100:
-                        raw_header = bytes(line)
-                        break
-
+                literals = parse_fetch_literals(response.lines)
+                raw_header = literals.get(uid) or next(iter(literals.values()), None)
                 if not raw_header:
                     logger.warning(f"No raw_header found for UID {uid}")
                     continue
 
-                # Parse with email library
-                msg = email.message_from_bytes(raw_header)
-
-                # Extract fields
-                subject = self._decode_header(msg.get("Subject", ""))
-                sender = self._decode_header(msg.get("From", ""))
-                date_str = msg.get("Date", "")
-
-                # Parse date
-                try:
-                    from email.utils import parsedate_to_datetime
-
-                    email_date = parsedate_to_datetime(date_str)
-                except Exception:
-                    email_date = datetime.now()
-
-                headers[uid] = {
-                    "subject": subject,
-                    "sender": sender,
-                    "date": email_date,
-                }
+                headers[uid] = self._parse_header_fields(raw_header)
 
             except TimeoutError:
                 logger.warning(f"Timeout fetching headers for UID {uid}")
@@ -632,29 +625,21 @@ class AsyncIMAPClient:
         if not uids:
             return {}
 
-        bodies = {}
-
         try:
-            # Fetch full email for each UID
-            for uid in uids:
-                try:
-                    email_obj = await self._fetch_single_email(uid, mark_seen=False)
-                    if email_obj:
-                        bodies[uid] = {
-                            "subject": email_obj.subject,
-                            "sender": email_obj.sender,
-                            "date": email_obj.date,
-                            "body": email_obj.body,
-                            "attachments": email_obj.attachments,
-                        }
-                except Exception as e:
-                    logger.warning(f"Error fetching body for UID {uid}: {e}")
-                    continue
-
-            return bodies
-
+            messages = await self.fetch_messages(uids, mark_seen=False)
         except Exception as e:
             raise IMAPConnectionError(f"Failed to fetch bodies: {e}") from e
+
+        return {
+            uid: {
+                "subject": msg.subject,
+                "sender": msg.sender,
+                "date": msg.date,
+                "body": msg.body,
+                "attachments": msg.attachments,
+            }
+            for uid, msg in messages.items()
+        }
 
     async def delete_emails(self, uids: list[str]) -> int:
         """Delete emails by UID.

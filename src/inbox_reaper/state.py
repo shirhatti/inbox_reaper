@@ -40,6 +40,8 @@ class Email(BaseModel):
     body: str
     date: datetime
     attachments: list[str] = Field(default_factory=list)
+    # True when the message carries a List-Unsubscribe header (bulk mail)
+    has_list_unsubscribe: bool = False
 
 
 class EmailDecision(BaseModel):
