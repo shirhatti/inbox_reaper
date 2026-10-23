@@ -43,18 +43,17 @@ def load_config_file(config_path: str) -> dict[str, Any]:
                 "YAML support not available. Install PyYAML: pip install pyyaml"
             )
         return _load_yaml(path)
-    elif suffix == ".json":
+    if suffix == ".json":
         return _load_json(path)
-    else:
-        raise ValueError(
-            f"Unsupported config file format: {suffix}. "
-            "Supported formats: .yaml, .yml, .json"
-        )
+    raise ValueError(
+        f"Unsupported config file format: {suffix}. "
+        "Supported formats: .yaml, .yml, .json"
+    )
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
     """Load configuration from a YAML file."""
-    with open(path, encoding="utf-8") as f:
+    with path.open(encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     if not isinstance(config, dict):
@@ -65,7 +64,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 def _load_json(path: Path) -> dict[str, Any]:
     """Load configuration from a JSON file."""
-    with open(path, encoding="utf-8") as f:
+    with path.open(encoding="utf-8") as f:
         config = json.load(f)
 
     if not isinstance(config, dict):

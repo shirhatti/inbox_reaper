@@ -5,12 +5,12 @@ pure functional programming patterns.
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class Decision(str, Enum):
+class Decision(StrEnum):
     """Classification decision for an email."""
 
     KEEP = "keep"
@@ -18,13 +18,14 @@ class Decision(str, Enum):
     UNCERTAIN = "uncertain"
 
 
-class FilterReason(str, Enum):
+class FilterReason(StrEnum):
     """Reason for filtering decision (before AI classification)."""
 
     ATTACHMENT = "attachment"
     KEYWORD = "keyword"
     WHITELIST = "whitelist"
     SENDER_PATTERN = "sender_pattern"
+    RULE = "rule"  # learned/manual sender or domain rule
     AI_CLASSIFIED = "ai_classified"
     NONE = "none"
 
@@ -40,6 +41,8 @@ class Email(BaseModel):
     body: str
     date: datetime
     attachments: list[str] = Field(default_factory=list)
+    # True when the message carries a List-Unsubscribe header (bulk mail)
+    has_list_unsubscribe: bool = False
 
 
 class EmailDecision(BaseModel):
@@ -101,6 +104,9 @@ class Config(BaseModel):
     enable_pipelining: bool = True
     enable_sender_tracking: bool = True
 
+    # Learned rules file (from `inbox-reaper learn`), applied before AI
+    rules_path: str | None = None
+
     # Safety
     dry_run: bool = True
 
@@ -142,7 +148,7 @@ class ProcessingState(BaseModel):
 
     def add_decision(self, decision: EmailDecision) -> "ProcessingState":
         """Pure function to add a decision and update counters."""
-        new_decisions = self.decisions + [decision]
+        new_decisions = [*self.decisions, decision]
         new_processed_uids = self.processed_uids | {decision.email.uid}
 
         # Update sender stats
@@ -177,7 +183,7 @@ class ProcessingState(BaseModel):
 
     def add_error(self, error: str) -> "ProcessingState":
         """Pure function to add an error."""
-        return self.model_copy(update={"errors": self.errors + [error]})
+        return self.model_copy(update={"errors": [*self.errors, error]})
 
     def update_batch(self, emails: list[Email]) -> "ProcessingState":
         """Pure function to update current batch and pagination."""

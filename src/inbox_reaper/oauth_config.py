@@ -7,7 +7,7 @@ using Thunderbird's publicly available OAuth client IDs.
 OAUTH_CONFIGS = {
     "gmail": {
         "client_id": "406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com",  # noqa: E501
-        "client_secret": "kSmqreRr0qwBWJgbf5Y-PjSU",  # Thunderbird's client secret  # noqa: E501
+        "client_secret": "kSmqreRr0qwBWJgbf5Y-PjSU",  # Thunderbird's client secret
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": "https://oauth2.googleapis.com/token",
         "scope": "https://mail.google.com/",
@@ -60,14 +60,13 @@ def detect_provider(email: str) -> str:
 
     if "@gmail.com" in email_lower or "@googlemail.com" in email_lower:
         return "gmail"
-    elif (
+    if (
         "@outlook.com" in email_lower
         or "@hotmail.com" in email_lower
         or "@live.com" in email_lower
     ):
         return "outlook"
-    else:
-        raise ValueError(
-            f"Cannot auto-detect provider for {email}. "
-            "Please specify --provider explicitly (gmail or outlook)"
-        )
+    raise ValueError(
+        f"Cannot auto-detect provider for {email}. "
+        "Please specify --provider explicitly (gmail or outlook)"
+    )

@@ -228,7 +228,7 @@ class TestCheckpointIntegrity:
         checkpoint_manager.update_watermark("12345")
         checkpoint_manager.update_stats(100, 60, 40, 0)
 
-        is_valid, message = checkpoint_manager.verify_checkpoint_integrity()
+        is_valid, _message = checkpoint_manager.verify_checkpoint_integrity()
 
         assert is_valid is True
 

@@ -6,6 +6,8 @@ Provides a Click-based command-line interface for the email classification syste
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
 
 import click
 
@@ -37,7 +39,32 @@ def cli():
     a multi-layer decision pipeline to efficiently classify and optionally
     delete marketing emails.
     """
-    pass
+
+
+def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
+    """Load the optional config file, overlay CLI args, and validate."""
+    file_config = {}
+    if config_path:
+        try:
+            click.echo(f"Loading configuration from: {config_path}")
+            file_config = load_config_file(config_path)
+        except Exception as e:
+            click.echo(f"Error loading config file: {e}", err=True)
+            raise click.Abort() from e
+
+    # Merge configurations (CLI args take precedence)
+    merged_config = merge_config_with_cli_args(file_config, cli_args)
+
+    # Validate required fields
+    if not merged_config.get("email"):
+        click.echo("Error: --email is required (or must be in config file)", err=True)
+        raise click.Abort()
+
+    try:
+        return Config(**merged_config)
+    except Exception as e:
+        click.echo(f"Error creating configuration: {e}", err=True)
+        raise click.Abort() from e
 
 
 @cli.command()
@@ -100,6 +127,12 @@ def cli():
     multiple=True,
     help="Whitelisted domains to trigger KEEP (can specify multiple times)",
 )
+@click.option(
+    "--rules",
+    "rules_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Rules file from 'inbox-reaper learn', applied before heuristics and AI",
+)
 def process(
     config: str | None,
     model: str | None,
@@ -112,31 +145,23 @@ def process(
     max_emails: int | None,
     keywords: tuple,
     whitelist_domain: tuple,
+    rules_path: str | None,
 ):
     """Process emails through the classification pipeline with LangGraph.
 
     This command runs the email classification pipeline using LangGraph for
     orchestration, with support for checkpointing and resumable processing.
 
+    \b
     Example:
         inbox-reaper process --config config.yaml
         inbox-reaper process --email user@example.com --keywords "important"
         inbox-reaper process --email user@example.com --max-emails 10
+        inbox-reaper process --email user@example.com --rules rules.json
     """
     click.echo("Inbox Reaper - Email Classification System (MLX)")
     click.echo("=" * 60)
 
-    # Load configuration from file if provided
-    file_config = {}
-    if config:
-        try:
-            click.echo(f"Loading configuration from: {config}")
-            file_config = load_config_file(config)
-        except Exception as e:
-            click.echo(f"Error loading config file: {e}", err=True)
-            raise click.Abort() from e
-
-    # Prepare CLI arguments
     cli_args = {
         "email": email,
         "model_name": model,
@@ -146,22 +171,9 @@ def process(
         "max_emails": max_emails,
         "keywords": list(keywords) if keywords else None,
         "whitelist_domains": list(whitelist_domain) if whitelist_domain else None,
+        "rules_path": rules_path,
     }
-
-    # Merge configurations (CLI args take precedence)
-    merged_config = merge_config_with_cli_args(file_config, cli_args)
-
-    # Validate required fields
-    if not merged_config.get("email"):
-        click.echo("Error: --email is required (or must be in config file)", err=True)
-        raise click.Abort()
-
-    # Create configuration object
-    try:
-        config_obj = Config(**merged_config)
-    except Exception as e:
-        click.echo(f"Error creating configuration: {e}", err=True)
-        raise click.Abort() from e
+    config_obj = build_config(config, cli_args)
 
     click.echo("\nConfiguration:")
     click.echo(f"  MLX Model: {config_obj.model_name}")
@@ -171,6 +183,7 @@ def process(
     click.echo(f"  Checkpoint: {checkpoint_path}")
     click.echo(f"  Keywords: {config_obj.keywords or 'None'}")
     click.echo(f"  Whitelisted domains: {config_obj.whitelist_domains or 'None'}")
+    click.echo(f"  Rules: {config_obj.rules_path or 'None'}")
 
     # Run the LangGraph pipeline
     try:
@@ -193,6 +206,110 @@ def process(
     except Exception as e:
         click.echo(f"\nError during processing: {e}", err=True)
         raise
+
+
+@cli.command()
+@click.option(
+    "--config",
+    type=click.Path(exists=True),
+    help="Path to configuration file (YAML or JSON)",
+)
+@click.option("--email", help="Email address to learn from")
+@click.option(
+    "--output",
+    "-o",
+    default="rules.json",
+    type=click.Path(dir_okay=False),
+    help="Where to write the learned rules",
+    show_default=True,
+)
+@click.option("--model", default=None, help="MLX model name for AI classification")
+@click.option("--max-emails", type=int, help="Maximum number of emails to scan")
+@click.option(
+    "--min-support",
+    default=3,
+    type=click.IntRange(min=1),
+    help="Emails required from a sender/domain before a rule is learned",
+    show_default=True,
+)
+@click.option(
+    "--min-agreement",
+    default=0.9,
+    type=click.FloatRange(0.5, 1.0),
+    help="Share of emails that must agree on keep/delete",
+    show_default=True,
+)
+@click.option(
+    "--ai/--no-ai",
+    default=True,
+    help="Use AI for emails the deterministic filters do not decide",
+    show_default=True,
+)
+@click.option("--keywords", multiple=True, help="Critical keywords (KEEP)")
+@click.option("--whitelist-domain", multiple=True, help="Whitelisted domains (KEEP)")
+def learn(
+    config: str | None,
+    email: str | None,
+    output: str,
+    model: str | None,
+    max_emails: int | None,
+    min_support: int,
+    min_agreement: float,
+    ai: bool,
+    keywords: tuple,
+    whitelist_domain: tuple,
+):
+    """Learn deterministic sender/domain rules without changing the mailbox.
+
+    Classifies emails read-only, then writes rules for senders and domains that
+    were classified consistently. Review or edit the file, then apply it with
+    'inbox-reaper process --rules'.
+
+    \b
+    Example:
+        inbox-reaper learn --email user@example.com -o rules.json
+        inbox-reaper process --email user@example.com --rules rules.json
+    """
+    import asyncio
+
+    from .langgraph_streaming import run_learning_pipeline
+
+    config_obj = build_config(
+        config,
+        {
+            "email": email,
+            "model_name": model,
+            "max_emails": max_emails,
+            "keywords": list(keywords) if keywords else None,
+            "whitelist_domains": list(whitelist_domain) if whitelist_domain else None,
+        },
+    )
+
+    click.echo(f"Learning rules from {config_obj.email} (read-only)...")
+    rule_set = asyncio.run(
+        run_learning_pipeline(
+            config_obj,
+            min_support=min_support,
+            min_agreement=min_agreement,
+            use_ai=ai,
+        )
+    )
+    rule_set.save(output)
+
+    deletes = sum(r.action == "delete" for r in rule_set.rules)
+    click.echo(
+        f"\nLearned {len(rule_set.rules)} rules ({deletes} delete, "
+        f"{len(rule_set.rules) - deletes} keep) from "
+        f"{rule_set.emails_observed} emails -> {output}"
+    )
+    for rule in rule_set.rules[:15]:
+        click.echo(
+            f"  {rule.action.value:<6} {rule.match.value:<6} {rule.value}  "
+            f"({rule.support} emails, {rule.agreement:.0%} agree)"
+        )
+    if len(rule_set.rules) > 15:
+        click.echo(f"  ... and {len(rule_set.rules) - 15} more")
+    click.echo(f"\nReview {output}, then run: inbox-reaper process --rules {output}")
 
 
 @cli.command()
@@ -465,8 +582,7 @@ Date: {email_data["date"]}
                 output_path = output or f"email_{uid}.eml"
 
                 # Save to file
-                with open(output_path, "w", encoding="utf-8") as f:
-                    f.write(eml_content)
+                Path(output_path).write_text(eml_content, encoding="utf-8")
 
                 click.echo(f"✓ Email saved to {output_path}")
                 click.echo(f"  Size: {len(eml_content)} bytes")

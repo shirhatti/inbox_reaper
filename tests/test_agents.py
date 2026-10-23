@@ -1,8 +1,12 @@
 """Tests for agent functions, specifically text processing utilities."""
 
-import pytest
-
 from inbox_reaper.agents import remove_base64_images, strip_html
+
+# Small 1x1 transparent PNG in base64
+TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9"
+    "awAAAABJRU5ErkJggg=="
+)
 
 
 class TestRemoveBase64Images:
@@ -11,12 +15,12 @@ class TestRemoveBase64Images:
     def test_removes_png_base64_image(self):
         """Test removal of PNG base64 encoded image."""
         # Small 1x1 transparent PNG in base64
-        base64_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        base64_png = TINY_PNG_B64
         text = f'<img src="data:image/png;base64,{base64_png}">'
         result = remove_base64_images(text)
         assert base64_png not in result
-        assert 'data:image' not in result
-        assert '<img src="">' == result
+        assert "data:image" not in result
+        assert result == '<img src="">'
 
     def test_removes_jpeg_base64_image(self):
         """Test removal of JPEG base64 encoded image."""
@@ -25,7 +29,7 @@ class TestRemoveBase64Images:
         text = f'<img src="data:image/jpeg;base64,{base64_jpeg}">'
         result = remove_base64_images(text)
         assert base64_jpeg not in result
-        assert 'data:image' not in result
+        assert "data:image" not in result
 
     def test_removes_gif_base64_image(self):
         """Test removal of GIF base64 encoded image."""
@@ -39,13 +43,13 @@ class TestRemoveBase64Images:
         """Test removal of multiple base64 images in same text."""
         base64_1 = "iVBORw0KGgoAAAANSUhEUg=="
         base64_2 = "R0lGODlhAQABAIAAA=="
-        text = f'''
+        text = f"""
         <div>
             <img src="data:image/png;base64,{base64_1}">
             <p>Some text</p>
             <img src="data:image/gif;base64,{base64_2}">
         </div>
-        '''
+        """
         result = remove_base64_images(text)
         assert base64_1 not in result
         assert base64_2 not in result
@@ -100,7 +104,7 @@ class TestRemoveBase64Images:
     def test_preserves_surrounding_content(self):
         """Test that content surrounding base64 images is preserved."""
         base64_img = "iVBORw0KGgoAAAANSUhEUg=="
-        text = f'''
+        text = f"""
         <html>
         <body>
         <h1>Welcome!</h1>
@@ -108,7 +112,7 @@ class TestRemoveBase64Images:
         <p>Click <a href="https://example.com">here</a> to unsubscribe.</p>
         </body>
         </html>
-        '''
+        """
         result = remove_base64_images(text)
         assert "Welcome!" in result
         assert "Click" in result
@@ -122,8 +126,8 @@ class TestStripHtmlWithBase64:
 
     def test_strip_html_removes_base64_images(self):
         """Test that strip_html removes base64 images before processing."""
-        base64_img = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-        html = f'''
+        base64_img = TINY_PNG_B64
+        html = f"""
         <html>
         <body>
         <p>Hello World</p>
@@ -131,7 +135,7 @@ class TestStripHtmlWithBase64:
         <p>Goodbye</p>
         </body>
         </html>
-        '''
+        """
         result = strip_html(html)
         assert base64_img not in result
         assert "Hello World" in result
@@ -139,7 +143,7 @@ class TestStripHtmlWithBase64:
 
     def test_strip_html_cleans_text_with_multiple_base64_images(self):
         """Test strip_html with multiple base64 images."""
-        html = '''
+        html = """
         <div>
             <p>Product 1</p>
             <img src="data:image/png;base64,ABC123==">
@@ -147,7 +151,7 @@ class TestStripHtmlWithBase64:
             <img src="data:image/jpeg;base64,XYZ789==">
             <p>Product 3</p>
         </div>
-        '''
+        """
         result = strip_html(html)
         assert "data:image" not in result
         assert "base64" not in result
@@ -157,11 +161,11 @@ class TestStripHtmlWithBase64:
 
     def test_strip_html_handles_inline_base64_in_style(self):
         """Test strip_html with base64 in CSS background-image."""
-        html = '''
+        html = """
         <div style="background-image: url(data:image/png;base64,ABC123==)">
             <p>Content here</p>
         </div>
-        '''
+        """
         result = strip_html(html)
         assert "base64" not in result
         assert "Content here" in result
@@ -174,14 +178,14 @@ class TestStripHtmlWithBase64:
 
     def test_strip_html_realistic_marketing_email(self):
         """Test with realistic marketing email containing base64 images."""
-        html = '''
+        html = f"""
         <html>
         <head><title>Special Offer!</title></head>
         <body>
         <table>
             <tr>
                 <td>
-                    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="Logo">
+                    <img src="data:image/png;base64,{TINY_PNG_B64}" alt="Logo">
                 </td>
             </tr>
             <tr>
@@ -199,7 +203,7 @@ class TestStripHtmlWithBase64:
         </table>
         </body>
         </html>
-        '''
+        """
         result = strip_html(html)
         # Base64 should be removed
         assert "iVBORw0KGgo" not in result
@@ -207,3 +211,57 @@ class TestStripHtmlWithBase64:
         assert "50% OFF" in result
         assert "sale" in result.lower()
         assert "unsubscribe" in result.lower()
+
+
+class TestWhitelist:
+    """check_whitelist must parse display-name senders correctly."""
+
+    @staticmethod
+    def _email(sender: str):
+        from datetime import datetime
+
+        from inbox_reaper.state import Email
+
+        return Email(uid="1", subject="s", sender=sender, body="", date=datetime.now())
+
+    def test_display_name_sender_matches(self):
+        from inbox_reaper.agents import check_whitelist
+        from inbox_reaper.state import Config
+
+        config = Config(whitelist_domains=["bank.com"])
+        assert check_whitelist(self._email("My Bank <alerts@bank.com>"), config)
+
+    def test_subdomain_matches(self):
+        from inbox_reaper.agents import check_whitelist
+        from inbox_reaper.state import Config
+
+        config = Config(whitelist_domains=["Bank.com"])
+        assert check_whitelist(self._email("alerts@mail.bank.com"), config)
+
+    def test_lookalike_domain_does_not_match(self):
+        from inbox_reaper.agents import check_whitelist
+        from inbox_reaper.state import Config
+
+        config = Config(whitelist_domains=["bank.com"])
+        assert check_whitelist(self._email("x@evilbank.com"), config) is None
+
+
+def test_list_unsubscribe_header_counts_as_marketing_signal():
+    from datetime import datetime
+
+    from inbox_reaper.agents import check_marketing_indicators
+    from inbox_reaper.state import Config, Email
+
+    def make(has_header: bool) -> Email:
+        return Email(
+            uid="1",
+            subject="News",
+            sender="news@shop.example",
+            body="View this email in your browser",
+            date=datetime.now(),
+            has_list_unsubscribe=has_header,
+        )
+
+    # "view ... browser" alone (score 2) is below the delete threshold of 3
+    assert check_marketing_indicators(make(False), Config()) is None
+    assert check_marketing_indicators(make(True), Config()) is not None

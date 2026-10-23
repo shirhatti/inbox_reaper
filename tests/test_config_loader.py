@@ -5,7 +5,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-
 import yaml
 
 from inbox_reaper.config_loader import (

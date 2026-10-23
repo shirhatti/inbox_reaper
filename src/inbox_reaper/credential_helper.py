@@ -4,6 +4,7 @@ This module provides a simple wrapper around the keyring library for
 secure credential storage across all platforms.
 """
 
+import contextlib
 import json
 from datetime import datetime
 
@@ -30,10 +31,9 @@ def _normalize_credentials(creds: dict) -> dict:
 
     # Handle expires_at format conversion
     expires_at = creds.get("expires_at")
-    if expires_at is not None and not isinstance(expires_at, str):
-        # Convert Unix timestamp to ISO string
-        if isinstance(expires_at, int | float):
-            creds["expires_at"] = datetime.fromtimestamp(expires_at).isoformat()
+    # Convert Unix timestamp to ISO string
+    if isinstance(expires_at, int | float):
+        creds["expires_at"] = datetime.fromtimestamp(expires_at).isoformat()
 
     # Remove extra OAuth response fields that shouldn't be stored
     # Keep only the essential credential fields
@@ -45,9 +45,7 @@ def _normalize_credentials(creds: dict) -> dict:
         "expires_at",
         "token_type",
     }
-    normalized = {k: v for k, v in creds.items() if k in essential_fields}
-
-    return normalized
+    return {k: v for k, v in creds.items() if k in essential_fields}
 
 
 def get_credentials(account: str) -> dict | None:
@@ -85,11 +83,9 @@ def erase_credentials(account: str) -> None:
     Args:
         account: Email account identifier
     """
-    try:
+    # Account may not exist, that's fine
+    with contextlib.suppress(keyring.errors.PasswordDeleteError):
         keyring.delete_password(SERVICE_NAME, account)
-    except keyring.errors.PasswordDeleteError:
-        # Account doesn't exist, that's fine
-        pass
 
 
 def list_accounts() -> list[str]:

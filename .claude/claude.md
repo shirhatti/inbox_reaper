@@ -27,7 +27,7 @@ uv run pre-commit run --all-files
 
 ### Why This Matters
 
-- Pre-commit hooks run ruff, black, and mypy locally
+- Pre-commit hooks run ruff and mypy locally, using the locked versions via `uv run`
 - These are the SAME checks that run in CI
 - If pre-commit passes, CI will pass
 - Prevents wasted time with CI failures
