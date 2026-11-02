@@ -8,6 +8,7 @@ This module tests:
 - Race condition prevention in shared state
 """
 
+import operator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -252,7 +253,6 @@ class TestStateAggregationFromParallel:
         ]
 
         # Using operator.add reducer (as defined in GraphState)
-        import operator
 
         accumulated = operator.add(decisions_from_subgraph1, decisions_from_subgraph2)
 
@@ -295,8 +295,6 @@ class TestStateAggregationFromParallel:
         needs_fetch_2 = ["789"]
         needs_fetch_3 = ["101", "102"]
 
-        import operator
-
         accumulated = operator.add(needs_fetch_1, needs_fetch_2)
         accumulated = operator.add(accumulated, needs_fetch_3)
 
@@ -311,8 +309,6 @@ class TestStateAggregationFromParallel:
         delete_2 = ["789"]
         delete_3 = []  # Some subgraphs may not delete anything
 
-        import operator
-
         accumulated = operator.add(delete_1, delete_2)
         accumulated = operator.add(accumulated, delete_3)
 
@@ -326,8 +322,6 @@ class TestStateAggregationFromParallel:
         processed_1 = {"123", "456"}
         processed_2 = {"456", "789"}  # 456 overlaps
         processed_3 = {"101"}
-
-        import operator
 
         unioned = operator.or_(processed_1, processed_2)
         unioned = operator.or_(unioned, processed_3)
@@ -405,7 +399,6 @@ class TestRaceConditionPrevention:
 
     def test_concurrent_list_accumulation_no_race_condition(self):
         """Test that concurrent list additions don't lose data."""
-        import operator
 
         base_list = []
 
@@ -425,7 +418,6 @@ class TestRaceConditionPrevention:
 
     def test_concurrent_set_union_no_race_condition(self):
         """Test that concurrent set unions work correctly."""
-        import operator
 
         base_set = {"uid0"}
 
@@ -587,7 +579,6 @@ class TestLargeScaleParallelExecution:
 
     def test_concurrent_list_accumulation_with_many_items(self):
         """Test list accumulation with many concurrent additions."""
-        import operator
 
         base_list = []
 

@@ -8,14 +8,27 @@ This module provides a clean interface for MLX-based LLM inference with:
 """
 
 import asyncio
+import importlib.util
+import logging
 import sys
-from typing import TYPE_CHECKING, Any, Optional
+from types import ModuleType
+from typing import Any
 
-if TYPE_CHECKING:
-    from .ui.events import EventEmitter
+logger = logging.getLogger(__name__)
 
 # Global model cache to avoid reloading models
 _model_cache: dict[str, tuple[Any, Any]] = {}
+
+
+def _mlx_lm() -> ModuleType:
+    """Import mlx_lm on first use: it is slow to import and Apple Silicon only."""
+    try:
+        import mlx_lm  # noqa: PLC0415 - deferred heavy/platform-specific import
+    except ImportError as e:
+        raise ImportError(
+            "mlx-lm is not installed. Install it with: uv add mlx-lm"
+        ) from e
+    return mlx_lm
 
 
 def is_mlx_available() -> bool:
@@ -24,17 +37,10 @@ def is_mlx_available() -> bool:
     Returns:
         True if MLX can be imported, False otherwise
     """
-    try:
-        import mlx_lm  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
+    return importlib.util.find_spec("mlx_lm") is not None
 
 
-def get_mlx_model(
-    model_name: str, event_emitter: Optional["EventEmitter"] = None
-) -> tuple[Any, Any]:
+def get_mlx_model(model_name: str) -> tuple[Any, Any]:
     """Load MLX model with caching.
 
     Downloads model from Hugging Face if not cached locally.
@@ -43,7 +49,6 @@ def get_mlx_model(
     Args:
         model_name: Hugging Face model ID
             (e.g., "mlx-community/Llama-3.2-3B-Instruct-4bit")
-        event_emitter: Optional event emitter for progress updates
 
     Returns:
         Tuple of (model, tokenizer)
@@ -52,72 +57,33 @@ def get_mlx_model(
         ImportError: If mlx-lm is not installed
         Exception: If model loading fails
     """
-    if model_name in _model_cache:
-        return _model_cache[model_name]
+    if cached := _model_cache.get(model_name):
+        return cached
 
-    try:
-        from mlx_lm import load
-    except ImportError as e:
-        raise ImportError(
-            "mlx-lm is not installed. Install it with: pip install mlx-lm"
-        ) from e
+    load = _mlx_lm().load
 
-    # Emit loading status or fallback to print
-    if event_emitter:
-        from .ui.events import EventType
-
-        event_emitter.emit(
-            EventType.PROCESSING_START,
-            f"Loading MLX model: {model_name}",
-            model=model_name,
-            note="First run will download model weights, cached for future use",
-        )
-    else:
-        print(f"Loading MLX model: {model_name}", file=sys.stderr)
-        print(
-            "(First run will download model weights, cached for future use)",
-            file=sys.stderr,
-        )
+    print(f"Loading MLX model: {model_name}", file=sys.stderr)
+    print(
+        "(First run will download model weights, cached for future use)",
+        file=sys.stderr,
+    )
 
     try:
         # Request config to get predictable 3-value return, discard it
-        model, tokenizer, _ = load(model_name, return_config=True)  # type: ignore[misc]
-        _model_cache[model_name] = (model, tokenizer)
-
-        # Emit success or fallback to print
-        if event_emitter:
-            from .ui.events import EventType
-
-            event_emitter.emit(
-                EventType.PROCESSING_COMPLETE,
-                f"✓ Model loaded successfully: {model_name}",
-                model=model_name,
-            )
-        else:
-            print(f"✓ Model loaded successfully: {model_name}", file=sys.stderr)
-
-        return model, tokenizer
+        model, tokenizer, _ = load(model_name, return_config=True)
     except Exception as e:
-        # Emit error or fallback to print
-        if event_emitter:
-            from .ui.events import EventType
-
-            event_emitter.emit(
-                EventType.PROCESSING_ERROR,
-                f"✗ Failed to load model {model_name}: {e}",
-                model=model_name,
-                error=str(e),
-            )
-        else:
-            print(f"✗ Failed to load model {model_name}: {e}", file=sys.stderr)
+        print(f"✗ Failed to load model {model_name}: {e}", file=sys.stderr)
         raise
+
+    _model_cache[model_name] = (model, tokenizer)
+    print(f"✓ Model loaded successfully: {model_name}", file=sys.stderr)
+    return model, tokenizer
 
 
 def generate_text(
     model_name: str,
     messages: list[dict[str, str]],
     max_tokens: int = 100,
-    event_emitter: Optional["EventEmitter"] = None,
 ) -> str:
     """Generate text using MLX model with chat template (synchronous).
 
@@ -125,7 +91,6 @@ def generate_text(
         model_name: Hugging Face model ID
         messages: Chat messages (list of dicts with 'role' and 'content')
         max_tokens: Maximum tokens to generate
-        event_emitter: Optional event emitter for progress updates
 
     Returns:
         Generated text string
@@ -133,79 +98,43 @@ def generate_text(
     Raises:
         ImportError: If mlx-lm is not installed
     """
-    try:
-        from mlx_lm import generate
-    except ImportError as e:
-        raise ImportError(
-            "mlx-lm is not installed. Install it with: pip install mlx-lm"
-        ) from e
-
-    model, tokenizer = get_mlx_model(model_name, event_emitter)
+    generate = _mlx_lm().generate
+    model, tokenizer = get_mlx_model(model_name)
 
     # Use chat template for instruct models (much better JSON compliance)
     prompt = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
 
-    # Generate text with explicit parameters
     # Note: MLX generate() returns the completion (without the prompt)
-    response = generate(
-        model,
-        tokenizer,
-        prompt=prompt,
-        max_tokens=max_tokens,
-        verbose=False,  # Suppress token-by-token output
+    response = str(
+        generate(
+            model,
+            tokenizer,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            verbose=False,  # Suppress token-by-token output
+        )
     )
 
-    # Explicit cast since mlx_lm doesn't have type stubs
-    response_str = str(response)
-
-    # Debug logging if response is suspiciously short
-    if len(response_str) < 10:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            f"MLX returned very short response ({len(response_str)} chars): "
-            f"'{response_str}'"
+    if len(response) < 10:
+        logger.warning(
+            "MLX returned very short response (%s chars): %r", len(response), response
         )
 
-    return response_str
+    return response
 
 
 async def generate_text_async(
     model_name: str,
     messages: list[dict[str, str]],
     max_tokens: int = 100,
-    event_emitter: Optional["EventEmitter"] = None,
 ) -> str:
     """Generate text using MLX model with chat template (asynchronous).
 
-    Runs generation in thread pool to avoid blocking event loop.
-
-    Args:
-        model_name: Hugging Face model ID
-        messages: Chat messages (list of dicts with 'role' and 'content')
-        max_tokens: Maximum tokens to generate
-        event_emitter: Optional event emitter for progress updates
-
-    Returns:
-        Generated text string
-
-    Raises:
-        ImportError: If mlx-lm is not installed
+    Runs generation in a worker thread to avoid blocking the event loop.
     """
-    # Run synchronous generate in thread pool to avoid blocking
-    from functools import partial
-
-    loop = asyncio.get_event_loop()
-    generate_fn = partial(
-        generate_text,
-        model_name=model_name,
-        messages=messages,
-        max_tokens=max_tokens,
-        event_emitter=event_emitter,
-    )
-    return await loop.run_in_executor(None, generate_fn)
+    return await asyncio.to_thread(generate_text, model_name, messages, max_tokens)
 
 
 def download_model(model_name: str) -> bool:
@@ -224,29 +153,27 @@ def download_model(model_name: str) -> bool:
         print("This may take a few minutes depending on model size...")
 
         # Loading the model will trigger download if not cached
-        _model, _tokenizer = get_mlx_model(model_name)
+        get_mlx_model(model_name)
 
         # Run a tiny test to verify it works
         print("\nVerifying model...")
         test_messages = [{"role": "user", "content": "Hello"}]
         test_output = generate_text(model_name, test_messages, max_tokens=5)
         print(f"Test generation: 'Hello' → '{test_output}'")
-
-        print(f"\n✓ Model downloaded and verified: {model_name}")
-        return True
-
     except Exception as e:
         print(f"\n✗ Failed to download model: {e}", file=sys.stderr)
         return False
 
+    print(f"\n✓ Model downloaded and verified: {model_name}")
+    return True
 
-def clear_model_cache():
+
+def clear_model_cache() -> None:
     """Clear in-memory model cache.
 
     Useful for testing or to free memory. Note: This does not delete
     the on-disk Hugging Face cache.
     """
-    global _model_cache
     _model_cache.clear()
     print("Model cache cleared")
 
@@ -257,4 +184,4 @@ def get_cached_models() -> list[str]:
     Returns:
         List of model names currently cached
     """
-    return list(_model_cache.keys())
+    return list(_model_cache)

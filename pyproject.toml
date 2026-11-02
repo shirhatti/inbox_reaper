@@ -57,10 +57,20 @@ select = [
     "PTH", # prefer pathlib
     "FURB", # refurb (modern idioms)
     "RUF", # ruff-specific
-    "TRY400", # logger.exception inside except blocks
+    "TRY", # exception-handling idioms
+    "G",   # lazy logging formatting
+    "PLC0415", # imports at module top level
+    "PLW", # pylint warnings (loop var reuse, needless global, ...)
+    "PYI", # typing idioms (Self, positional-only syntax)
+    "RSE", # raise without needless parens
+    "TC",  # typing-only imports and cast() expressions
+    "ASYNC", # no blocking calls in async functions
+    "A",   # no shadowed builtins
 ]
 ignore = [
     "RUF001", # intentional unicode (e.g. ✓) in CLI output
+    "TRY003", # descriptive messages on built-in exceptions are fine here
+    "TRY004", # config files with the wrong shape raise ValueError by design
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -87,10 +97,6 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "mlx_lm"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "inbox_reaper.ui.events"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

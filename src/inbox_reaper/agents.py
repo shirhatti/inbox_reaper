@@ -8,7 +8,6 @@ import json
 import logging
 import re
 from email.utils import parseaddr
-from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
 
@@ -27,9 +26,6 @@ from .text_utils import (  # noqa: F401 - re-exported for callers/tests
     strip_html,
     truncate_symmetric,
 )
-
-if TYPE_CHECKING:
-    from .ui.events import EventEmitter
 
 
 class AIClassificationResponse(BaseModel):
@@ -136,8 +132,8 @@ def check_whitelist(email: Email, config: Config) -> EmailDecision | None:
     # Matches the domain itself and any subdomain (alerts.bank.com for bank.com)
     if "@" in email.sender:
         domain = sender_domain(email.sender)
-        for whitelisted in config.whitelist_domains:
-            whitelisted = whitelisted.lower()
+        for entry in config.whitelist_domains:
+            whitelisted = entry.lower()
             if domain == whitelisted or domain.endswith("." + whitelisted):
                 return EmailDecision(
                     email=email,
@@ -275,11 +271,39 @@ def check_marketing_indicators(email: Email, config: Config) -> EmailDecision | 
     return None
 
 
-def classify_with_ai(
-    email: Email,
-    config: Config,
-    event_emitter: Optional["EventEmitter"] = None,
-) -> EmailDecision:
+def parse_ai_response(response: str) -> AIClassificationResponse:
+    """Extract the classification JSON from a model response.
+
+    Tolerates markdown code fences and text around the JSON object.
+
+    Raises:
+        ValueError: If no valid classification JSON is present
+    """
+    response_text = response.strip()
+
+    # Remove markdown code fences if present (```json ... ``` or ``` ... ```)
+    if response_text.startswith("```"):
+        # Drop the opening fence line (if any), then the closing fence
+        _, newline, rest = response_text.partition("\n")
+        if newline:
+            response_text = rest
+        response_text = response_text.removesuffix("```").strip()
+
+    # Find JSON object in response (handles cases where model adds text)
+    json_start = response_text.find("{")
+    json_end = response_text.rfind("}") + 1
+    if json_start == -1 or json_end <= json_start:
+        msg = (
+            f"No valid JSON in response. "
+            f"Response length: {len(response_text)}, "
+            f"First 200 chars: '{response_text[:200]}'"
+        )
+        raise ValueError(msg)
+
+    return AIClassificationResponse(**json.loads(response_text[json_start:json_end]))
+
+
+def classify_with_ai(email: Email, config: Config) -> EmailDecision:
     """Classify email using MLX LLM with structured JSON output.
 
     This is the only non-pure function (has side effect of calling MLX).
@@ -330,76 +354,34 @@ Output format: {{"is_marketing": true, "confidence": 0.95}}""",
             model_name=config.model_name,
             messages=messages,
             max_tokens=200,  # Generous buffer for models that add explanatory text
-            event_emitter=event_emitter,
         )
-
-        # Parse JSON response
-        # Try to extract JSON from response (in case model adds extra text or markdown)
-        response_text = response.strip()
-
-        # Remove markdown code fences if present (```json ... ``` or ``` ... ```)
-        if response_text.startswith("```"):
-            # Find the end of opening fence
-            first_newline = response_text.find("\n")
-            if first_newline != -1:
-                # Remove opening fence
-                response_text = response_text[first_newline + 1 :]
-            # Remove closing fence
-            response_text = response_text.removesuffix("```")
-            response_text = response_text.strip()
-
-        # Find JSON object in response (handles cases where model adds text)
-        json_start = response_text.find("{")
-        json_end = response_text.rfind("}") + 1
-
-        if json_start != -1 and json_end > json_start:
-            json_text = response_text[json_start:json_end]
-            parsed = json.loads(json_text)
-            classification = AIClassificationResponse(**parsed)
-
-            # Only delete if marked as marketing AND confidence >= threshold
-            # Otherwise, keep (safe default for low confidence)
-            if (
-                classification.is_marketing
-                and classification.confidence >= config.ai_confidence_threshold
-            ):
-                decision = Decision.DELETE
-            else:
-                decision = Decision.KEEP
-
-            return EmailDecision(
-                email=email,
-                decision=decision,
-                reason=FilterReason.AI_CLASSIFIED,
-                confidence=classification.confidence,
-            )
-        # No valid JSON found
-        raise ValueError(
-            f"No valid JSON in response. "
-            f"Response length: {len(response_text)}, "
-            f"First 200 chars: '{response_text[:200]}'"
-        )
-
+        classification = parse_ai_response(response)
     except Exception as e:
-        # On error, default to KEEP (safe default)
-        error_msg = f"MLX classification failed for email {email.uid}: {e}"
-
-        if event_emitter:
-            from .ui.events import EventType
-
-            event_emitter.emit(
-                EventType.PROCESSING_ERROR,
-                error_msg,
-                email_uid=email.uid,
-                error=str(e),
-            )
-        else:
-            # Malformed model output is expected occasionally; no traceback
-            logger.error(error_msg)  # noqa: TRY400
-
+        # Malformed model output is expected occasionally; log without traceback
+        # and default to KEEP (safe default)
+        logger.error(  # noqa: TRY400
+            "MLX classification failed for email %s: %s", email.uid, e
+        )
         return EmailDecision(
             email=email,
             decision=Decision.KEEP,
             reason=FilterReason.AI_CLASSIFIED,
             confidence=0.0,
         )
+
+    # Only delete if marked as marketing AND confidence >= threshold
+    # Otherwise, keep (safe default for low confidence)
+    if (
+        classification.is_marketing
+        and classification.confidence >= config.ai_confidence_threshold
+    ):
+        decision = Decision.DELETE
+    else:
+        decision = Decision.KEEP
+
+    return EmailDecision(
+        email=email,
+        decision=decision,
+        reason=FilterReason.AI_CLASSIFIED,
+        confidence=classification.confidence,
+    )

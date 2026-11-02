@@ -1,9 +1,17 @@
 """Tests for OAuth authentication flow."""
 
 import asyncio
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, Mock, call, patch
 
-from inbox_reaper.imap_client import generate_xoauth2_string
+import pytest
+
+from inbox_reaper.imap_client import (
+    IMAPAuthError,
+    IMAPConnectionError,
+    generate_xoauth2_string,
+)
+from inbox_reaper.langgraph_streaming import create_imap_client
 from inbox_reaper.oauth_flow import (
     perform_oauth_flow,
     refresh_access_token,
@@ -350,7 +358,6 @@ class TestVerifyImapConnection:
     def test_authentication_failure(self, mock_client_class):
         """Test handling of authentication failure."""
         # Import the exception class
-        from inbox_reaper.imap_client import IMAPAuthError
 
         # Setup mock to raise authentication error
         mock_client = AsyncMock()
@@ -373,7 +380,6 @@ class TestVerifyImapConnection:
     def test_connection_failure(self, mock_client_class):
         """Test handling of connection failure."""
         # Import the exception class
-        from inbox_reaper.imap_client import IMAPConnectionError
 
         # Setup mock to raise connection error
         mock_client = AsyncMock()
@@ -507,12 +513,8 @@ class TestRefreshAccessToken:
         mock_response.raise_for_status.side_effect = Exception("401 Unauthorized")
         mock_post.return_value = mock_response
 
-        # Test that exception is raised
-        try:
+        with pytest.raises(Exception, match="401 Unauthorized"):
             refresh_access_token("invalid_token", "gmail")
-            raise AssertionError("Should have raised exception")
-        except Exception as e:
-            assert "401 Unauthorized" in str(e)
 
 
 class TestTokenRefreshOnExpiry:
@@ -525,9 +527,6 @@ class TestTokenRefreshOnExpiry:
         self, mock_client_class, mock_get_creds, mock_refresh
     ):
         """Test that create_imap_client refreshes token when expired."""
-        from datetime import datetime, timedelta
-
-        from inbox_reaper.langgraph_streaming import create_imap_client
 
         # Setup: credentials with expired token
         expired_time = (datetime.now() - timedelta(hours=1)).isoformat()
@@ -571,9 +570,6 @@ class TestTokenRefreshOnExpiry:
         self, mock_client_class, mock_get_creds, mock_refresh
     ):
         """Test that create_imap_client doesn't refresh valid token."""
-        from datetime import datetime, timedelta
-
-        from inbox_reaper.langgraph_streaming import create_imap_client
 
         # Setup: credentials with VALID token (expires in 1 hour)
         valid_expiry = (datetime.now() + timedelta(hours=1)).isoformat()
@@ -611,9 +607,6 @@ class TestTokenRefreshOnExpiry:
         self, mock_client_class, mock_get_creds, mock_refresh
     ):
         """Test that create_imap_client continues with old token if refresh fails."""
-        from datetime import datetime, timedelta
-
-        from inbox_reaper.langgraph_streaming import create_imap_client
 
         # Setup: credentials with expired token
         expired_time = (datetime.now() - timedelta(hours=1)).isoformat()
@@ -655,7 +648,6 @@ class TestTokenRefreshOnExpiry:
     ):
         """Test that create_imap_client proactively refreshes when expires_at
         is invalid."""
-        from inbox_reaper.langgraph_streaming import create_imap_client
 
         # Test with None expires_at - should attempt refresh
         mock_get_creds.return_value = {

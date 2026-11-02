@@ -12,7 +12,7 @@ import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from datetime import datetime, timedelta
-from typing import Any, TypedDict
+from typing import Any, Self, TypedDict
 
 import aioimaplib
 from langgraph.graph import END, START, StateGraph
@@ -119,7 +119,7 @@ async def create_imap_client(email: str) -> AsyncIMAPClient:
                     "No refresh token available, using existing access token"
                 )
     except Exception as e:
-        logger.warning(f"Could not refresh token: {e}, using existing token")
+        logger.warning("Could not refresh token: %s, using existing token", e)
 
     # Create and return async client
     return AsyncIMAPClient(
@@ -162,7 +162,7 @@ class IMAPSession:
             try:
                 return await operation(client)
             except _RECONNECTABLE_ERRORS as e:
-                logger.warning(f"IMAP operation failed ({e}), reconnecting...")
+                logger.warning("IMAP operation failed (%s), reconnecting...", e)
                 await self._disconnect()
             client = await self._connect()
             return await operation(client)
@@ -171,7 +171,7 @@ class IMAPSession:
         async with self._lock:
             await self._disconnect()
 
-    async def __aenter__(self) -> "IMAPSession":
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -209,13 +209,13 @@ async def imap_producer(
         logger.info("No emails found.")
         return
 
-    logger.info(f"Found {len(all_uids)} emails")
+    logger.info("Found %s emails", len(all_uids))
 
     # Process in chronological order (UIDs are already ascending)
     # Apply max_emails limit if set (take oldest N emails)
     if config.max_emails:
         all_uids = all_uids[: config.max_emails]
-        logger.info(f"Limiting to {len(all_uids)} oldest emails")
+        logger.info("Limiting to %s oldest emails", len(all_uids))
 
     # 2. Fetch full messages in batches -- one round trip per batch
     fetch_batch_size = max(1, min(config.fetch_size, MAX_MESSAGES_PER_FETCH))
@@ -223,7 +223,9 @@ async def imap_producer(
     for i in range(0, len(all_uids), fetch_batch_size):
         batch = all_uids[i : i + fetch_batch_size]
 
-        logger.info(f"Fetching {len(batch)} emails (batch {i // fetch_batch_size + 1})")
+        logger.info(
+            "Fetching %s emails (batch %s)", len(batch), i // fetch_batch_size + 1
+        )
 
         async def fetch(
             client: AsyncIMAPClient, uids: list[str] = batch
@@ -244,7 +246,7 @@ async def imap_producer(
                     "rules": None,
                 }
             else:
-                logger.warning(f"Could not fetch email {uid}, skipping")
+                logger.warning("Could not fetch email %s, skipping", uid)
 
 
 async def prefetch[T](source: AsyncGenerator[T], depth: int) -> AsyncIterator[T]:
@@ -315,12 +317,12 @@ async def process_email_node(state: StreamingState) -> StreamingState:
     uid = state["email_uid"]
     email = state["email"]
 
-    logger.info(f"Processing email {uid}: {email.subject}")
+    logger.info("Processing email %s: %s", uid, email.subject)
 
     try:
         decision_obj = await classify_email(email, state["config"], state["rules"])
     except Exception as e:
-        logger.exception(f"Error processing email {uid}: {e}")
+        logger.exception("Error processing email %s", uid)
         # Safe default: keep the email on error
         return {
             **state,
@@ -330,9 +332,12 @@ async def process_email_node(state: StreamingState) -> StreamingState:
         }
 
     logger.info(
-        f"[{decision_obj.decision.value.upper()}] Email {uid}: "
-        f"{email.subject[:50]}... -> {decision_obj.reason.value} "
-        f"(confidence: {decision_obj.confidence})"
+        "[%s] Email %s: %s... -> %s (confidence: %s)",
+        decision_obj.decision.value.upper(),
+        uid,
+        email.subject[:50],
+        decision_obj.reason.value,
+        decision_obj.confidence,
     )
 
     return {
@@ -362,7 +367,7 @@ async def run_streaming_pipeline(config: Config):
     # Load rules up front so a bad file fails before touching the mailbox
     rules = RuleSet.load(config.rules_path) if config.rules_path else None
     if rules:
-        logger.info(f"Loaded {len(rules.rules)} rules from {config.rules_path}")
+        logger.info("Loaded %s rules from %s", len(rules.rules), config.rules_path)
 
     logger.info("Starting streaming pipeline...")
 
@@ -372,15 +377,15 @@ async def run_streaming_pipeline(config: Config):
     async with IMAPSession(config.email) as session:
         # Coordinator for batch deletes (shares the producer's connection)
         async def execute_deletes(uids: list[str]):
-            logger.info(f"Executing batch delete for {len(uids)} emails")
+            logger.info("Executing batch delete for %s emails", len(uids))
             if config.dry_run:
-                logger.info(f"DRY RUN: Would delete {uids}")
+                logger.info("DRY RUN: Would delete %s", uids)
                 return
 
             try:
                 await session.run(lambda client: client.delete_emails(uids))
-            except Exception as e:
-                logger.exception(f"Error deleting emails: {e}")
+            except Exception:
+                logger.exception("Error deleting emails")
 
         batch_coordinator = BatchCoordinator(
             processor=execute_deletes,
@@ -411,8 +416,8 @@ async def run_streaming_pipeline(config: Config):
                     rate = stats["processed"] / (time.monotonic() - started)
                     print(f"Processed {stats['processed']} emails ({rate:.1f}/s)...")
 
-            except Exception as e:
-                logger.exception(f"Error processing email: {e}")
+            except Exception:
+                logger.exception("Error processing email")
                 stats["errors"] += 1
 
         # Flush remaining deletes
@@ -459,8 +464,8 @@ async def run_learning_pipeline(
                     decision = await classify_email(email, config)
                 else:
                     decision = classify_deterministic(email, config)
-            except Exception as e:
-                logger.exception(f"Error classifying email {email.uid}: {e}")
+            except Exception:
+                logger.exception("Error classifying email %s", email.uid)
                 decision = None
 
             if decision is None:
@@ -474,7 +479,7 @@ async def run_learning_pipeline(
                 print(f"Classified {seen} emails ({rate:.1f}/s)...")
 
     if skipped:
-        logger.info(f"{skipped} emails had no decision and were not used")
+        logger.info("%s emails had no decision and were not used", skipped)
     return learner.build(
         min_support=min_support, min_agreement=min_agreement, account=config.email
     )

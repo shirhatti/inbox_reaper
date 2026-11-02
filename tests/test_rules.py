@@ -9,6 +9,7 @@ import pytest
 from inbox_reaper.langgraph_streaming import (
     classify_deterministic,
     run_learning_pipeline,
+    run_streaming_pipeline,
 )
 from inbox_reaper.rules import Rule, RuleLearner, RuleMatch, RuleSet
 from inbox_reaper.state import Config, Decision, Email, EmailDecision, FilterReason
@@ -209,7 +210,6 @@ class TestProcessWithRules:
     @patch("inbox_reaper.langgraph_streaming.classify_with_ai")
     @patch("inbox_reaper.langgraph_streaming.create_imap_client")
     def test_rule_drives_delete(self, mock_create_client, mock_ai, tmp_path):
-        from inbox_reaper.langgraph_streaming import run_streaming_pipeline
 
         path = tmp_path / "rules.json"
         RuleSet(
@@ -230,7 +230,6 @@ class TestProcessWithRules:
 
     @patch("inbox_reaper.langgraph_streaming.create_imap_client")
     def test_bad_rules_file_fails_before_connecting(self, mock_create_client, tmp_path):
-        from inbox_reaper.langgraph_streaming import run_streaming_pipeline
 
         path = tmp_path / "rules.json"
         path.write_text("not json")

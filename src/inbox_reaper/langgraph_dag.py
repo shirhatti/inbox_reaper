@@ -328,7 +328,7 @@ def email_processing_subgraph(state: GraphState) -> GraphState:
 
     return {
         **state,
-        "needs_full_fetch": [cast(str, current_email_uid)],
+        "needs_full_fetch": [cast("str", current_email_uid)],
     }
 
 

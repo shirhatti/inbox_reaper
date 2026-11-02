@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime
 from unittest.mock import patch
 
-from inbox_reaper.agents import classify_with_ai
+from inbox_reaper.agents import classify_with_ai, parse_ai_response
 from inbox_reaper.state import Config, Decision, Email, FilterReason
 
 
@@ -341,3 +341,11 @@ This email appears to be promotional."""
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_parse_ai_response_single_line_fence():
+    """A fence without a newline must not discard the JSON."""
+
+    parsed = parse_ai_response('```{"is_marketing": true, "confidence": 0.8}```')
+    assert parsed.is_marketing is True
+    assert parsed.confidence == 0.8

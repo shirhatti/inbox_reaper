@@ -1,5 +1,6 @@
 """Tests for IMAP response parsing and message extraction (no network)."""
 
+import asyncio
 import email
 from email.message import EmailMessage
 from unittest.mock import AsyncMock
@@ -118,7 +119,6 @@ class TestFetchMessages:
 
     @pytest.mark.parametrize("uids", [["1", "2"]])
     def test_batches_into_single_fetch(self, uids):
-        import asyncio
 
         lines = []
         for uid in uids:
@@ -139,7 +139,6 @@ class TestFetchMessages:
         assert {m.subject for m in messages.values()} == {"S1", "S2"}
 
     def test_timeout_raises_connection_error(self):
-        import asyncio
 
         async def run():
             client = make_client()

@@ -89,7 +89,7 @@ class RuleSet(BaseModel):
     min_agreement: float = 0.0
     rules: list[Rule] = Field(default_factory=list)
 
-    def model_post_init(self, __context: object) -> None:
+    def model_post_init(self, context: object, /) -> None:
         self._senders = {
             r.value.lower(): r for r in self.rules if r.match == RuleMatch.SENDER
         }

@@ -72,7 +72,7 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"Invalid request")
 
-    def log_message(self, format, *args):
+    def log_message(self, format, *args):  # noqa: A002 - stdlib signature
         """Suppress log messages."""
 
 
@@ -144,7 +144,7 @@ def _perform_redirect_flow(email: str, provider: str, config: dict) -> dict:
 
     # Exchange authorization code for tokens (authlib handles PKCE automatically)
     return cast(
-        dict,
+        "dict",
         session.fetch_token(
             config["token_uri"],
             authorization_response=authorization_response,
@@ -295,7 +295,7 @@ def refresh_access_token(refresh_token: str, provider: str) -> dict:
             token={"refresh_token": refresh_token},
         )
         return cast(
-            dict,
+            "dict",
             session.refresh_token(config["token_uri"], refresh_token=refresh_token),
         )
 

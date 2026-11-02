@@ -25,6 +25,7 @@ def setup_dev():
             ["uv", "run", "pre-commit", "run", "--all-files"],
             capture_output=True,
             text=True,
+            check=False,  # non-zero just means hooks reformatted files
         )
 
         # pre-commit returns 1 if it made changes, which is okay for initial setup

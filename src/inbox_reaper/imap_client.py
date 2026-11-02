@@ -14,7 +14,7 @@ import re
 from datetime import datetime
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, Self
 
 import aioimaplib
 
@@ -60,6 +60,19 @@ def parse_fetch_literals(lines: list[Any]) -> dict[str, bytes]:
             uid, literal = None, None
 
     return results
+
+
+_AUTH_FAILURE_PATTERNS = (
+    "authentication failed",
+    "invalid credentials",
+    "authenticationfailed",
+)
+
+
+def _require_ok(response: Any, action: str) -> None:
+    """Raise IMAPConnectionError unless an IMAP response completed OK."""
+    if response.result != "OK":
+        raise IMAPConnectionError(f"Failed to {action}: {response.lines}")
 
 
 def _parse_date(date_str: str) -> datetime:
@@ -138,7 +151,7 @@ class AsyncIMAPClient:
         """
         try:
             # Create connection
-            logger.info(f"Connecting to {self.host}:993...")
+            logger.info("Connecting to %s:993...", self.host)
             self.client = aioimaplib.IMAP4_SSL(
                 host=self.host, port=993, timeout=self.timeout
             )
@@ -155,27 +168,6 @@ class AsyncIMAPClient:
                 self.client.xoauth2(self.email_address, self.access_token),
                 timeout=self.timeout,
             )
-
-            # Check authentication response
-            if response.result != "OK":
-                # Check for common auth failure patterns
-                error_msg = " ".join(response.lines)
-                if any(
-                    pattern in error_msg.lower()
-                    for pattern in [
-                        "authentication failed",
-                        "invalid credentials",
-                        "authenticationfailed",
-                    ]
-                ):
-                    raise IMAPAuthError(f"OAuth authentication failed: {error_msg}")
-                raise IMAPConnectionError(f"IMAP connection failed: {error_msg}")
-
-            logger.info(f"Connected to {self.host} as {self.email_address}")
-
-        except IMAPAuthError:
-            # Re-raise auth errors for token refresh handling
-            raise
         except TimeoutError as e:
             raise IMAPConnectionError(
                 f"Connection timeout after {self.timeout}s connecting to {self.host}"
@@ -183,13 +175,22 @@ class AsyncIMAPClient:
         except Exception as e:
             raise IMAPConnectionError(f"Failed to connect to IMAP server: {e}") from e
 
+        if response.result != "OK":
+            error_msg = " ".join(map(str, response.lines))
+            # Auth errors are distinct so callers can refresh the token
+            if any(p in error_msg.lower() for p in _AUTH_FAILURE_PATTERNS):
+                raise IMAPAuthError(f"OAuth authentication failed: {error_msg}")
+            raise IMAPConnectionError(f"IMAP connection failed: {error_msg}")
+
+        logger.info("Connected to %s as %s", self.host, self.email_address)
+
     async def disconnect(self) -> None:
         """Disconnect from IMAP server."""
         if self.client:
             try:
                 await self.client.logout()
             except Exception as e:
-                logger.warning(f"Error during disconnect: {e}")
+                logger.warning("Error during disconnect: %s", e)
             finally:
                 self.client = None
 
@@ -328,7 +329,7 @@ class AsyncIMAPClient:
                     timeout=self.timeout,
                 )
                 if response.result != "OK":
-                    logger.warning(f"Failed to fetch UID {uid}: {response.lines}")
+                    logger.warning("Failed to fetch UID %s: %s", uid, response.lines)
                     continue
                 literals = parse_fetch_literals(response.lines)
                 if uid not in literals and len(literals) == 1:
@@ -336,7 +337,7 @@ class AsyncIMAPClient:
                     literals = {uid: next(iter(literals.values()))}
                 messages.update(self._parse_messages(literals))
             except Exception as e:
-                logger.warning(f"Failed to fetch email UID {uid}: {e}")
+                logger.warning("Failed to fetch email UID %s: %s", uid, e)
 
         return messages
 
@@ -346,7 +347,7 @@ class AsyncIMAPClient:
             try:
                 messages[uid] = self._parse_message(uid, raw)
             except Exception as e:
-                logger.warning(f"Error parsing email UID {uid}: {e}")
+                logger.warning("Error parsing email UID %s: %s", uid, e)
         return messages
 
     def _parse_message(self, uid: str, raw_email: bytes) -> Email:
@@ -486,22 +487,16 @@ class AsyncIMAPClient:
             # Use uid_search to directly get UIDs (native aioimaplib method)
             # Pass charset=None to avoid BADCHARSET errors on Exchange/Outlook servers
             response = await self.client.uid_search(criteria, charset=None)
-            if response.result != "OK":
-                raise IMAPConnectionError(f"UID search failed: {response.lines}")
-
-            # Parse UIDs from response
-            uids_data = response.lines[0]
-            if isinstance(uids_data, bytes):
-                uids_data = uids_data.decode()
-
-            uids_str = str(uids_data) if uids_data else ""
-            if not uids_str or uids_str == "":
-                return []
-
-            return uids_str.split()
-
         except Exception as e:
             raise IMAPConnectionError(f"Failed to search UIDs: {e}") from e
+        _require_ok(response, "search UIDs")
+
+        # Parse UIDs from response
+        uids_data = response.lines[0]
+        if isinstance(uids_data, bytes):
+            uids_data = uids_data.decode()
+
+        return str(uids_data).split() if uids_data else []
 
     async def fetch_headers(self, uids: list[str]) -> dict[str, dict[str, Any]]:
         """Fetch email headers for a list of UIDs.
@@ -535,25 +530,24 @@ class AsyncIMAPClient:
                 self.client.uid("fetch", uid_set, "(UID BODY.PEEK[HEADER])"),
                 timeout=self.timeout,
             )
-
-            if response.result != "OK":
-                logger.warning(f"Batch fetch failed: {response.result}")
-                # Fall back to individual fetches on batch failure
-                return await self._fetch_headers_individually(uids)
-
-            for uid, raw_header in parse_fetch_literals(response.lines).items():
-                try:
-                    headers[uid] = self._parse_header_fields(raw_header)
-                except Exception as e:
-                    logger.warning(f"Error parsing header for UID {uid}: {e}")
-
-            return headers
-
         except TimeoutError:
             logger.warning("Batch fetch timeout, falling back to individual fetches")
             return await self._fetch_headers_individually(uids)
         except Exception as e:
             raise IMAPConnectionError(f"Failed to fetch headers: {e}") from e
+
+        if response.result != "OK":
+            logger.warning("Batch fetch failed: %s", response.result)
+            # Fall back to individual fetches on batch failure
+            return await self._fetch_headers_individually(uids)
+
+        for uid, raw_header in parse_fetch_literals(response.lines).items():
+            try:
+                headers[uid] = self._parse_header_fields(raw_header)
+            except Exception as e:
+                logger.warning("Error parsing header for UID %s: %s", uid, e)
+
+        return headers
 
     async def _fetch_headers_individually(
         self, uids: list[str]
@@ -580,23 +574,23 @@ class AsyncIMAPClient:
 
                 if response.result != "OK":
                     logger.warning(
-                        f"Failed to fetch headers for UID {uid}: {response.result}"
+                        "Failed to fetch headers for UID %s: %s", uid, response.result
                     )
                     continue
 
                 literals = parse_fetch_literals(response.lines)
                 raw_header = literals.get(uid) or next(iter(literals.values()), None)
                 if not raw_header:
-                    logger.warning(f"No raw_header found for UID {uid}")
+                    logger.warning("No raw_header found for UID %s", uid)
                     continue
 
                 headers[uid] = self._parse_header_fields(raw_header)
 
             except TimeoutError:
-                logger.warning(f"Timeout fetching headers for UID {uid}")
+                logger.warning("Timeout fetching headers for UID %s", uid)
                 continue
             except Exception as e:
-                logger.warning(f"Error fetching headers for UID {uid}: {e}")
+                logger.warning("Error fetching headers for UID %s: %s", uid, e)
                 continue
 
         return headers
@@ -661,48 +655,37 @@ class AsyncIMAPClient:
         if not uids:
             return 0
 
-        deleted_count = 0
+        uid_set = ",".join(uids)
 
         try:
-            uid_set = ",".join(uids)
-
             # For Gmail, copy to Trash first to ensure proper deletion
             if self.host == "imap.gmail.com":
-                logger.debug(f"Gmail detected: Moving {len(uids)} emails to Trash")
+                logger.debug("Gmail detected: Moving %s emails to Trash", len(uids))
                 response = await self.client.uid("copy", uid_set, '"[Gmail]/Trash"')
-
                 if response.result != "OK":
                     logger.warning(
-                        f"Failed to copy emails to Trash: {response.lines}. "
-                        "Proceeding with standard deletion (will archive instead)."
+                        "Failed to copy emails to Trash: %s. "
+                        "Proceeding with standard deletion (will archive instead).",
+                        response.lines,
                     )
 
             # Mark emails as deleted
             response = await self.client.uid("store", uid_set, "+FLAGS", r"(\Deleted)")
-
-            if response.result != "OK":
-                raise IMAPConnectionError(
-                    f"Failed to mark emails as deleted: {response.lines}"
-                )
+            _require_ok(response, "mark emails as deleted")
 
             # Expunge to remove from current mailbox
             # Note: Gmail auto-expunges, so this may be redundant but harmless
             response = await self.client.expunge()
-
-            if response.result != "OK":
-                raise IMAPConnectionError(
-                    f"Failed to expunge deleted emails: {response.lines}"
-                )
-
-            deleted_count = len(uids)
-            logger.info(f"Deleted {deleted_count} emails from mailbox")
-
+            _require_ok(response, "expunge deleted emails")
+        except IMAPConnectionError:
+            raise
         except Exception as e:
             raise IMAPConnectionError(f"Failed to delete emails: {e}") from e
 
-        return deleted_count
+        logger.info("Deleted %s emails from mailbox", len(uids))
+        return len(uids)
 
-    async def __aenter__(self) -> "AsyncIMAPClient":
+    async def __aenter__(self) -> Self:
         """Async context manager entry."""
         await self.connect()
         return self

@@ -4,7 +4,10 @@ Provides a Click-based command-line interface for the email classification syste
 """
 
 import asyncio
+import base64
+import json
 import logging
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -13,6 +16,8 @@ import click
 
 from . import credential_helper
 from .config_loader import load_config_file, merge_config_with_cli_args
+from .imap_client import AsyncIMAPClient
+from .mlx_backend import download_model as download_mlx_model
 from .oauth_config import detect_provider
 from .oauth_flow import (
     perform_oauth_flow,
@@ -50,7 +55,7 @@ def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
             file_config = load_config_file(config_path)
         except Exception as e:
             click.echo(f"Error loading config file: {e}", err=True)
-            raise click.Abort() from e
+            raise click.Abort from e
 
     # Merge configurations (CLI args take precedence)
     merged_config = merge_config_with_cli_args(file_config, cli_args)
@@ -58,13 +63,13 @@ def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
     # Validate required fields
     if not merged_config.get("email"):
         click.echo("Error: --email is required (or must be in config file)", err=True)
-        raise click.Abort()
+        raise click.Abort
 
     try:
         return Config(**merged_config)
     except Exception as e:
         click.echo(f"Error creating configuration: {e}", err=True)
-        raise click.Abort() from e
+        raise click.Abort from e
 
 
 @cli.command()
@@ -190,9 +195,8 @@ def process(
         click.echo("\nStarting LangGraph pipeline execution (Streaming Mode)...")
         click.echo("-" * 60)
 
-        import asyncio
-
-        from .langgraph_streaming import run_streaming_pipeline
+        # Deferred: importing LangGraph takes ~2s, which would slow every command
+        from .langgraph_streaming import run_streaming_pipeline  # noqa: PLC0415
 
         asyncio.run(run_streaming_pipeline(config_obj))
 
@@ -270,9 +274,8 @@ def learn(
         inbox-reaper learn --email user@example.com -o rules.json
         inbox-reaper process --email user@example.com --rules rules.json
     """
-    import asyncio
-
-    from .langgraph_streaming import run_learning_pipeline
+    # Deferred: importing LangGraph takes ~2s, which would slow every command
+    from .langgraph_streaming import run_learning_pipeline  # noqa: PLC0415
 
     config_obj = build_config(
         config,
@@ -339,8 +342,6 @@ def download_model(model: str):
         inbox-reaper download-model
         inbox-reaper download-model --model mlx-community/Llama-3.2-1B-Instruct-4bit
     """
-    from .mlx_backend import download_model as download_mlx_model
-
     click.echo("Inbox Reaper - Model Download")
     click.echo("=" * 60)
     click.echo(f"\nModel: {model}")
@@ -520,7 +521,6 @@ def fetch_email(email, uid, output):
 
     This is a debug command to inspect specific emails.
     """
-    from .imap_client import AsyncIMAPClient
 
     async def _fetch():
         # Get credentials
@@ -582,7 +582,9 @@ Date: {email_data["date"]}
                 output_path = output or f"email_{uid}.eml"
 
                 # Save to file
-                Path(output_path).write_text(eml_content, encoding="utf-8")
+                await asyncio.to_thread(
+                    Path(output_path).write_text, eml_content, encoding="utf-8"
+                )
 
                 click.echo(f"✓ Email saved to {output_path}")
                 click.echo(f"  Size: {len(eml_content)} bytes")
@@ -611,9 +613,6 @@ def diagnose(email: str, refresh: bool):
         inbox-reaper diagnose user@gmail.com
         inbox-reaper diagnose user@gmail.com --refresh
     """
-    import base64
-    import json
-
     # Get credentials
     creds = credential_helper.get_credentials(email)
     if not creds:
@@ -752,8 +751,6 @@ def diagnose(email: str, refresh: bool):
 
         except Exception as e:
             click.echo(f"\nError during token refresh: {e}", err=True)
-            import traceback
-
             click.echo(traceback.format_exc(), err=True)
 
 

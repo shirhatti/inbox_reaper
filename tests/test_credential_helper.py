@@ -3,6 +3,8 @@
 import json
 from unittest.mock import patch
 
+import keyring.errors
+
 from inbox_reaper.credential_helper import (
     SERVICE_NAME,
     erase_credentials,
@@ -254,7 +256,6 @@ class TestEraseCredentials:
     def test_erase_nonexistent_credentials(self, mock_delete_password):
         """Test erasing credentials that don't exist (should not raise error)."""
         # Setup mock to raise PasswordDeleteError
-        import keyring.errors
 
         mock_delete_password.side_effect = keyring.errors.PasswordDeleteError()
 
