@@ -20,6 +20,7 @@ import aioimaplib
 
 from .state import Email
 from .text_utils import truncate_symmetric
+from .timeutil import to_utc, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +77,11 @@ def _require_ok(response: Any, action: str) -> None:
 
 
 def _parse_date(date_str: str) -> datetime:
+    """Parse a Date header as aware UTC ("-0000" / no zone means UTC)."""
     try:
-        return parsedate_to_datetime(date_str)
+        return to_utc(parsedate_to_datetime(date_str), naive_is_local=False)
     except Exception:
-        return datetime.now()
+        return utcnow()
 
 
 def generate_xoauth2_string(email: str, access_token: str) -> str:

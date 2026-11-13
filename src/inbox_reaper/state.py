@@ -9,6 +9,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .timeutil import utcnow
+
 
 class Decision(StrEnum):
     """Classification decision for an email."""
@@ -54,7 +56,7 @@ class EmailDecision(BaseModel):
     decision: Decision
     reason: FilterReason
     confidence: float = 1.0
-    processed_at: datetime = Field(default_factory=datetime.now)
+    processed_at: datetime = Field(default_factory=utcnow)
 
 
 class SenderStats(BaseModel):

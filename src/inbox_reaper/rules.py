@@ -18,6 +18,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .state import Decision, Email, EmailDecision, FilterReason
+from .timeutil import utcnow
 
 RULES_FILE_VERSION = 1
 
@@ -83,7 +84,7 @@ class RuleSet(BaseModel):
 
     version: int = RULES_FILE_VERSION
     account: str = ""
-    generated_at: datetime = Field(default_factory=datetime.now)
+    generated_at: datetime = Field(default_factory=utcnow)
     emails_observed: int = 0
     min_support: int = 0
     min_agreement: float = 0.0

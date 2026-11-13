@@ -66,6 +66,7 @@ select = [
     "TC",  # typing-only imports and cast() expressions
     "ASYNC", # no blocking calls in async functions
     "A",   # no shadowed builtins
+    "DTZ", # timezone-aware datetimes only
 ]
 ignore = [
     "RUF001", # intentional unicode (e.g. ✓) in CLI output
@@ -74,7 +75,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["E501", "PTH", "RUF012"]
+"tests/**" = ["E501", "PTH", "RUF012", "DTZ"]
 
 [tool.ruff.format]
 quote-style = "double"

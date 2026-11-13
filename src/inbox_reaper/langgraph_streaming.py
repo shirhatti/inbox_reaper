@@ -11,7 +11,6 @@ import contextlib
 import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from datetime import datetime, timedelta
 from typing import Any, Self, TypedDict
 
 import aioimaplib
@@ -27,17 +26,13 @@ from .agents import (
     classify_with_ai,
 )
 from .batch_coordinator import BatchCoordinator
-from .credential_helper import get_credentials, store_credentials
+from .credential_helper import get_credentials
 from .imap_client import AsyncIMAPClient, IMAPConnectionError
-from .oauth_flow import refresh_access_token
+from .oauth_flow import refresh_if_expiring
 from .rules import RuleLearner, RuleSet
 from .state import Config, Email, EmailDecision
 
 logger = logging.getLogger(__name__)
-
-# Refresh tokens that expire within this window so a fresh connection does not
-# get dropped mid-batch.
-TOKEN_REFRESH_MARGIN = timedelta(minutes=5)
 
 # Upper bound on full messages per UID FETCH, to cap memory when emails carry
 # large attachments.
@@ -85,39 +80,8 @@ async def create_imap_client(email: str) -> AsyncIMAPClient:
             f"No credentials found for {email}. Please run 'inbox-reaper login' first."
         )
 
-    # Check if token is expired and refresh if needed
     try:
-        expires_at_str = creds.get("expires_at")
-        if expires_at_str and isinstance(expires_at_str, str):
-            expires_at = datetime.fromisoformat(expires_at_str)
-            if expires_at < datetime.now() + TOKEN_REFRESH_MARGIN:
-                logger.info("Access token expired, refreshing...")
-                tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
-                creds["access_token"] = tokens["access_token"]
-                creds["expires_at"] = (
-                    datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
-                ).isoformat()
-                # Persist the refreshed credentials
-                store_credentials(email, creds)
-                logger.info("Refreshed credentials persisted to keyring")
-        else:
-            # Token expiration info missing, proactively refresh to be safe
-            logger.warning(
-                "Token expiration time missing or invalid, attempting refresh..."
-            )
-            if "refresh_token" in creds:
-                tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
-                creds["access_token"] = tokens["access_token"]
-                creds["expires_at"] = (
-                    datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
-                ).isoformat()
-                # Persist the refreshed credentials
-                store_credentials(email, creds)
-                logger.info("Token refreshed and persisted successfully")
-            else:
-                logger.warning(
-                    "No refresh token available, using existing access token"
-                )
+        refresh_if_expiring(email, creds)
     except Exception as e:
         logger.warning("Could not refresh token: %s, using existing token", e)
 

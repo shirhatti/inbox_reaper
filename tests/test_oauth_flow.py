@@ -520,7 +520,13 @@ class TestRefreshAccessToken:
 class TestTokenRefreshOnExpiry:
     """Tests for automatic token refresh when token expires."""
 
-    @patch("inbox_reaper.langgraph_streaming.refresh_access_token")
+    @pytest.fixture(autouse=True)
+    def _no_keyring_writes(self):
+        # Never persist test credentials to the real system keyring
+        with patch("inbox_reaper.oauth_flow.store_credentials"):
+            yield
+
+    @patch("inbox_reaper.oauth_flow.refresh_access_token")
     @patch("inbox_reaper.langgraph_streaming.get_credentials")
     @patch("inbox_reaper.langgraph_streaming.AsyncIMAPClient")
     def test_create_imap_client_refreshes_expired_token(
@@ -563,7 +569,7 @@ class TestTokenRefreshOnExpiry:
         # Verify: result is the client instance
         assert result == mock_client
 
-    @patch("inbox_reaper.langgraph_streaming.refresh_access_token")
+    @patch("inbox_reaper.oauth_flow.refresh_access_token")
     @patch("inbox_reaper.langgraph_streaming.get_credentials")
     @patch("inbox_reaper.langgraph_streaming.AsyncIMAPClient")
     def test_create_imap_client_uses_valid_token_without_refresh(
@@ -600,7 +606,7 @@ class TestTokenRefreshOnExpiry:
         # Verify: result is the client instance
         assert result == mock_client
 
-    @patch("inbox_reaper.langgraph_streaming.refresh_access_token")
+    @patch("inbox_reaper.oauth_flow.refresh_access_token")
     @patch("inbox_reaper.langgraph_streaming.get_credentials")
     @patch("inbox_reaper.langgraph_streaming.AsyncIMAPClient")
     def test_create_imap_client_handles_refresh_failure_gracefully(
@@ -639,10 +645,10 @@ class TestTokenRefreshOnExpiry:
         # (will fail on actual connect, but client created)
         assert result == mock_client
 
-    @patch("inbox_reaper.langgraph_streaming.store_credentials")
+    @patch("inbox_reaper.oauth_flow.store_credentials")
     @patch("inbox_reaper.langgraph_streaming.AsyncIMAPClient")
     @patch("inbox_reaper.langgraph_streaming.get_credentials")
-    @patch("inbox_reaper.langgraph_streaming.refresh_access_token")
+    @patch("inbox_reaper.oauth_flow.refresh_access_token")
     def test_create_imap_client_handles_invalid_expires_at_types(
         self, mock_refresh, mock_get_creds, mock_client_class, mock_store_creds
     ):

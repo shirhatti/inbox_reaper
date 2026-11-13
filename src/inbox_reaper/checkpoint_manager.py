@@ -9,7 +9,6 @@ import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +16,7 @@ import click
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from .langgraph_state import GraphState
+from .timeutil import utcnow
 
 
 class CheckpointManager:
@@ -105,7 +105,7 @@ class CheckpointManager:
                     last_update_time = ?
                 WHERE id = 1
                 """,
-                (uid, datetime.now().isoformat()),
+                (uid, utcnow().isoformat()),
             )
 
     def update_stats(

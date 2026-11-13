@@ -6,9 +6,10 @@ secure credential storage across all platforms.
 
 import contextlib
 import json
-from datetime import datetime
 
 import keyring
+
+from .timeutil import parse_timestamp
 
 SERVICE_NAME = "inbox-reaper-oauth"
 
@@ -31,9 +32,11 @@ def _normalize_credentials(creds: dict) -> dict:
 
     # Handle expires_at format conversion
     expires_at = creds.get("expires_at")
-    # Convert Unix timestamp to ISO string
-    if isinstance(expires_at, int | float):
-        creds["expires_at"] = datetime.fromtimestamp(expires_at).isoformat()
+    # Store expiry as aware UTC ISO 8601: converts Unix timestamps and migrates
+    # naive local-time strings written by older versions
+    if expires_at is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            creds["expires_at"] = parse_timestamp(expires_at).isoformat()
 
     # Remove extra OAuth response fields that shouldn't be stored
     # Keep only the essential credential fields

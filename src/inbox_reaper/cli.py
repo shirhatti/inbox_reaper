@@ -8,7 +8,6 @@ import base64
 import json
 import logging
 import traceback
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +21,11 @@ from .oauth_config import detect_provider
 from .oauth_flow import (
     perform_oauth_flow,
     refresh_access_token,
+    refresh_if_expiring,
     verify_imap_connection,
 )
 from .state import Config
+from .timeutil import expiry_after, parse_timestamp, utcnow
 
 # Configure logging
 logging.basicConfig(
@@ -399,9 +400,7 @@ def login(email: str, provider: str | None):
             "provider": provider,
             "access_token": tokens["access_token"],
             "refresh_token": tokens.get("refresh_token"),
-            "expires_at": (
-                datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
-            ).isoformat(),
+            "expires_at": expiry_after(tokens.get("expires_in", 3600)),
             "token_type": tokens.get("token_type", "Bearer"),
         }
 
@@ -471,20 +470,8 @@ def test(email: str):
 
     # Check if token expired and refresh if needed
     try:
-        expires_at_str = creds.get("expires_at")
-        if expires_at_str and isinstance(expires_at_str, str):
-            expires = datetime.fromisoformat(expires_at_str)
-            if expires < datetime.now():
-                click.echo("Token expired, refreshing...")
-                tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
-                creds["access_token"] = tokens["access_token"]
-                creds["expires_at"] = (
-                    datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
-                ).isoformat()
-                credential_helper.store_credentials(email, creds)
-                click.echo("✓ Token refreshed successfully")
-        else:
-            click.echo("Warning: Token expiration time missing or invalid", err=True)
+        if refresh_if_expiring(email, creds):
+            click.echo("✓ Token refreshed successfully")
     except Exception as e:
         click.echo(f"Warning: Could not refresh token: {e}", err=True)
 
@@ -535,15 +522,7 @@ def fetch_email(email, uid, output):
 
         # Check if token expired and refresh if needed
         try:
-            expires = datetime.fromisoformat(creds.get("expires_at", ""))
-            if expires < datetime.now():
-                click.echo("Token expired, refreshing...")
-                tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
-                creds["access_token"] = tokens["access_token"]
-                creds["expires_at"] = (
-                    datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
-                ).isoformat()
-                credential_helper.store_credentials(email, creds)
+            if refresh_if_expiring(email, creds):
                 click.echo("✓ Token refreshed successfully")
         except Exception as e:
             click.echo(f"Warning: Could not refresh token: {e}", err=True)
@@ -635,8 +614,8 @@ def diagnose(email: str, refresh: bool):
     if expires_at_str:
         if isinstance(expires_at_str, str):
             try:
-                expires_at = datetime.fromisoformat(expires_at_str)
-                now = datetime.now()
+                expires_at = parse_timestamp(expires_at_str)
+                now = utcnow()
                 if expires_at < now:
                     delta = now - expires_at
                     click.echo(f"Status: EXPIRED {delta} ago", err=True)
@@ -685,8 +664,8 @@ def diagnose(email: str, refresh: bool):
             # Check for expiration in JWT
             if "exp" in payload:
                 exp_timestamp = payload["exp"]
-                exp_dt = datetime.fromtimestamp(exp_timestamp)
-                now = datetime.now()
+                exp_dt = parse_timestamp(exp_timestamp)
+                now = utcnow()
                 click.echo(f"\nJWT exp claim: {exp_dt.isoformat()}")
                 if exp_dt < now:
                     delta = now - exp_dt
@@ -741,8 +720,7 @@ def diagnose(email: str, refresh: bool):
                 click.echo(
                     f"\n✓ expires_in present: {expires_in} seconds ({hours:.1f} hours)"
                 )
-                future_expiry = datetime.now() + timedelta(seconds=expires_in)
-                click.echo(f"  Would expire at: {future_expiry.isoformat()}")
+                click.echo(f"  Would expire at: {expiry_after(expires_in)}")
             else:
                 click.echo(
                     "\n✗ WARNING: expires_in NOT present in refresh response",

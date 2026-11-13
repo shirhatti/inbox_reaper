@@ -6,12 +6,12 @@ with efficient bulk operations and querying capabilities.
 
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
 from inbox_reaper.state import SenderStats
+from inbox_reaper.timeutil import utcnow
 
 
 class SenderStatsDB:
@@ -190,7 +190,7 @@ class SenderStatsDB:
                     marketing_count,
                     total_count,
                     1 if auto_delete else 0,
-                    datetime.now().isoformat(),
+                    utcnow().isoformat(),
                 ),
             )
             conn.commit()
@@ -212,7 +212,7 @@ class SenderStatsDB:
             cursor = conn.cursor()
 
             # Prepare batch data
-            now = datetime.now().isoformat()
+            now = utcnow().isoformat()
             batch_data = []
             for sender, stat_dict in stats.items():
                 batch_data.append(

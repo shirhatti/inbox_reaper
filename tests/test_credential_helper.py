@@ -1,6 +1,7 @@
 """Tests for credential storage using keyring."""
 
 import json
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import keyring.errors
@@ -12,6 +13,17 @@ from inbox_reaper.credential_helper import (
     list_accounts,
     store_credentials,
 )
+
+
+def same_instant(migrated: str, legacy_naive: str) -> bool:
+    """A migrated expiry is aware UTC and the same instant as the legacy value.
+
+    Legacy values were naive local time, so compare against local time.
+    """
+    parsed = datetime.fromisoformat(migrated)
+    return parsed.utcoffset() == timedelta(0) and parsed == (
+        datetime.fromisoformat(legacy_naive).astimezone()
+    )
 
 
 class TestGetCredentials:
@@ -34,8 +46,11 @@ class TestGetCredentials:
         # Test retrieval
         result = get_credentials("test@example.com")
 
-        # Verify result
-        assert result == test_creds
+        # Verify result; legacy naive expiry is migrated to aware UTC
+        assert {k: v for k, v in result.items() if k != "expires_at"} == {
+            k: v for k, v in test_creds.items() if k != "expires_at"
+        }
+        assert same_instant(result["expires_at"], test_creds["expires_at"])
 
         # Verify keyring call
         mock_get_password.assert_called_once_with(SERVICE_NAME, "test@example.com")
@@ -129,7 +144,7 @@ class TestGetCredentials:
         assert result["provider"] == test_creds["provider"]
         assert result["access_token"] == test_creds["access_token"]
         assert result["refresh_token"] == test_creds["refresh_token"]
-        assert result["expires_at"] == test_creds["expires_at"]
+        assert same_instant(result["expires_at"], test_creds["expires_at"])
         assert result["token_type"] == test_creds["token_type"]
 
 
