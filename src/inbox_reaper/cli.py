@@ -109,12 +109,6 @@ def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
     show_default=True,
 )
 @click.option(
-    "--resume/--no-resume",
-    default=True,
-    help="Resume from checkpoint if available (default: ask user)",
-    show_default=True,
-)
-@click.option(
     "--email",
     help="Email address to process",
 )
@@ -146,7 +140,6 @@ def process(
     concurrent_limit: int | None,
     dry_run: bool | None,
     checkpoint_path: str,
-    resume: bool,
     email: str | None,
     max_emails: int | None,
     keywords: tuple,
@@ -425,18 +418,11 @@ def logout(email: str):
 
 
 @cli.command()
-@click.option(
-    "--verbose",
-    "-v",
-    is_flag=True,
-    help="Show detailed information including expiration status",
-)
-def accounts(verbose: bool):
+def accounts():
     """List all stored email accounts.
 
     Example:
         inbox-reaper accounts
-        inbox-reaper accounts --verbose
 
     Note:
         Due to limitations in the keyring library, this command cannot

@@ -94,9 +94,6 @@ This will:
 # List all stored accounts
 inbox-reaper accounts
 
-# List with detailed information
-inbox-reaper accounts --verbose
-
 # Test IMAP connection
 inbox-reaper test user@gmail.com
 
