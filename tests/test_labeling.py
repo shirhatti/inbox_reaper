@@ -21,6 +21,7 @@ from inbox_reaper.labeling import (
     review_order,
     training_examples,
 )
+from inbox_reaper.rules import Rule, RuleMatch, RuleSet
 from inbox_reaper.state import Config, Decision, Email
 
 NOW = datetime(2026, 11, 15, tzinfo=UTC)
@@ -211,13 +212,20 @@ class TestEvaluate:
             ),  # expired: effectively delete
             "4": lab("4", "keep"),
         }
-        ev = evaluate([alert, promo, code, personal], [labels], Config(email="me@x"))
-        assert ev.paths["sender_pattern"].deletes == 2
-        assert ev.paths["sender_pattern"].wrong_deletes == 1
+        rule = RuleSet(
+            rules=[Rule(match=RuleMatch.DOMAIN, value="bank.example", action="delete")]
+        )
+        ev = evaluate(
+            [alert, promo, code, personal], [labels], Config(email="me@x"), rule
+        )
+        # Marketing indicators alone delete nothing: the alert and the promo
+        # are left to the AI (not scored here); a bad rule still shows up
+        assert "sender_pattern" not in ev.paths
+        assert (ev.paths["rule"].deletes, ev.paths["rule"].wrong_deletes) == (1, 1)
         assert (
             ev.paths["expired"].deletes == 1 and ev.paths["expired"].wrong_deletes == 0
         )
-        assert ev.wrong_deletes == 1 and ev.precision == 2 / 3
-        assert ev.recall == 1.0
+        assert ev.wrong_deletes == 1 and ev.precision == 1 / 2
+        assert ev.recall == 1 / 2
         assert "Direct Debit Withdrawal" in ev.wrong[0]
         assert "precision" in format_evaluation(ev)[0]

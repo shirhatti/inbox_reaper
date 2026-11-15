@@ -22,7 +22,6 @@ from langgraph.graph.state import CompiledStateGraph
 from .agents import (
     check_attachments,
     check_keywords,
-    check_marketing_indicators,
     check_transactional_patterns,
     check_whitelist,
     classify_batch_with_ai,
@@ -49,10 +48,11 @@ HARD_KEEP_FILTERS = (
     check_whitelist,
 )
 
-# Heuristics applied after learned rules, before AI.
+# Heuristics applied after learned rules, before AI. They only ever keep:
+# marketing indicators (unsubscribe footers, "view in browser") also appear on
+# bank alerts and statements, so they are a combiner feature, never a delete.
 HEURISTIC_FILTERS = (
     check_transactional_patterns,  # receipts, orders, shipping
-    check_marketing_indicators,  # unsubscribe, view in browser
 )
 
 # Failures that indicate a dropped/expired connection worth one reconnect.

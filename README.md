@@ -32,9 +32,10 @@ every deletion path can be measured on labelled mail (`inbox-reaper evaluate`).
    3. *Learned rules* - sender/domain rules from `--rules` (see below)
    4. With `--combiner`: the *feature vector* (below) is scored by the trained
       combiner, which deletes or keeps only when confident.
-      Without one: the *heuristics* - transactional patterns keep; marketing
+      Without one: the *heuristics* - transactional patterns keep. Marketing
       indicators (unsubscribe text, "view in browser", tracking subdomains)
-      delete
+      never delete on their own - bank alerts and statements carry them too -
+      so those emails go to the AI
    5. *AI* - the MLX model, for whatever is still undecided (with a combiner it
       also receives a one-line summary of the signals that fired). A single
       worker groups waiting emails into one batched generation call of up to

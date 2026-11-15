@@ -59,7 +59,7 @@ def make_mock_client(messages: dict[str, Email]) -> AsyncMock:
 
 
 MESSAGES = {
-    # Marketing: unsubscribe footer + marketing subdomain -> delete
+    # Marketing: unsubscribe footer + marketing subdomain -> AI decides
     "1": make_email(
         "1",
         "Big sale",
@@ -103,12 +103,15 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
 
     @patch("inbox_reaper.langgraph_streaming.create_imap_client")
     async def test_streaming_pipeline_deletes(self, mock_create_client):
-        mock_client = make_mock_client(MESSAGES)
+        # An expired one-time code is deleted without the AI; the marketing
+        # email is left to the AI, which keeps it here
+        code = make_email("3", "Your verification code is 123456", "no-reply@x.example")
+        mock_client = make_mock_client({"1": MESSAGES["1"], "3": code})
         mock_create_client.return_value = mock_client
 
         await run_streaming_pipeline(make_config(dry_run=False))
 
-        mock_client.delete_emails.assert_awaited_once_with(["1"])
+        mock_client.delete_emails.assert_awaited_once_with(["3"])
         mock_create_client.assert_called_once()
 
     @patch("inbox_reaper.langgraph_streaming.classify_batch_with_ai")
@@ -398,8 +401,9 @@ class TestCombinerRouting(unittest.IsolatedAsyncioTestCase):
         assert expired.reason == FilterReason.EXPIRED
         combiner.decide.assert_not_called()
 
-    async def test_without_combiner_heuristics_still_decide(self):
-        ai = AsyncMock()
+    async def test_without_combiner_marketing_goes_to_ai(self):
+        # Unsubscribe footers also appear on bank alerts: never a delete alone
+        ai = AsyncMock(return_value=ai_keep(MESSAGES["1"]))
         decision = await classify_email(MESSAGES["1"], make_config(), None, ai)
-        assert decision.decision == Decision.DELETE
-        ai.assert_not_awaited()
+        assert decision.decision == Decision.KEEP
+        ai.assert_awaited_once_with(MESSAGES["1"], "")

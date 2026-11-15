@@ -155,15 +155,19 @@ class TestRuleApplication:
     def test_rules_apply_before_heuristics(self):
         rules = RuleSet(
             rules=[
-                Rule(match=RuleMatch.SENDER, value="news@shop.example", action="keep")
+                Rule(match=RuleMatch.SENDER, value="news@shop.example", action="delete")
             ]
         )
-        # The marketing heuristic alone would delete this email
-        email = make_email("news@shop.example", body="Unsubscribe here")
-        assert classify_deterministic(email, Config()).decision == Decision.DELETE
+        # The transactional heuristic alone would keep this email
+        email = make_email("news@shop.example", body="Order confirmed!")
+        assert classify_deterministic(email, Config()).decision == Decision.KEEP
         decision = classify_deterministic(email, Config(), rules)
-        assert decision.decision == Decision.KEEP
+        assert decision.decision == Decision.DELETE
         assert decision.reason == FilterReason.RULE
+
+    def test_marketing_indicators_never_delete_alone(self):
+        email = make_email("news@e.shop.example", body="Unsubscribe here")
+        assert classify_deterministic(email, Config()) is None
 
 
 class TestLearningPipeline:
@@ -180,11 +184,21 @@ class TestLearningPipeline:
         client.fetch_messages.side_effect = lambda uids: {u: messages[u] for u in uids}
         mock_create_client.return_value = client
 
-        rule_set = asyncio.run(
-            run_learning_pipeline(
-                Config(email="me@example.com", dry_run=False), use_ai=False
+        with patch(
+            "inbox_reaper.langgraph_streaming.classify_batch_with_ai",
+            side_effect=lambda emails, config, signals=None: [
+                EmailDecision(
+                    email=e,
+                    decision=Decision.DELETE,
+                    reason=FilterReason.AI_CLASSIFIED,
+                    confidence=0.9,
+                )
+                for e in emails
+            ],
+        ):
+            rule_set = asyncio.run(
+                run_learning_pipeline(Config(email="me@example.com", dry_run=False))
             )
-        )
 
         client.delete_emails.assert_not_called()
         assert rule_set.emails_observed == 6
