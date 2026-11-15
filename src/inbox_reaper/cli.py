@@ -102,13 +102,6 @@ def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
     help="Enable dry-run mode (no actual deletions)",
 )
 @click.option(
-    "--checkpoint-path",
-    default="checkpoints.db",
-    type=click.Path(),
-    help="Path to SQLite checkpoint database for resumable processing",
-    show_default=True,
-)
-@click.option(
     "--email",
     help="Email address to process",
 )
@@ -139,7 +132,6 @@ def process(
     batch_size: int | None,
     concurrent_limit: int | None,
     dry_run: bool | None,
-    checkpoint_path: str,
     email: str | None,
     max_emails: int | None,
     keywords: tuple,
@@ -149,7 +141,7 @@ def process(
     """Process emails through the classification pipeline with LangGraph.
 
     This command runs the email classification pipeline using LangGraph for
-    orchestration, with support for checkpointing and resumable processing.
+    orchestration. Each run scans the whole inbox; there is no resume state.
 
     \b
     Example:
@@ -179,7 +171,6 @@ def process(
     click.echo(f"  Batch size: {config_obj.batch_size}")
     click.echo(f"  Concurrent limit: {config_obj.concurrent_ai_limit}")
     click.echo(f"  Dry run: {config_obj.dry_run}")
-    click.echo(f"  Checkpoint: {checkpoint_path}")
     click.echo(f"  Keywords: {config_obj.keywords or 'None'}")
     click.echo(f"  Whitelisted domains: {config_obj.whitelist_domains or 'None'}")
     click.echo(f"  Rules: {config_obj.rules_path or 'None'}")

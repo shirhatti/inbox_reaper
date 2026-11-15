@@ -9,7 +9,6 @@ Email classification and cleaning system using a hybrid deterministic + AI pipel
 The system uses **LangGraph** for stateful, parallel email processing:
 - **Parallel Processing**: Process multiple emails simultaneously using Send() API
 - **State Synchronization**: Thread-safe reducers for concurrent state updates
-- **Checkpointing**: Automatic progress persistence with resume capability
 - **Graph-Based Workflow**: Declarative DAG for complex orchestration
 
 ### Key Components
@@ -215,32 +214,16 @@ dry_run: true
 
 See `config.example.yaml` or `config.example.json` for all available options.
 
-### Checkpoint and Resume
+### Interrupting and Re-running
 
-The system automatically creates checkpoints after each batch. If interrupted (CTRL-C, crash, etc.), you can resume:
+`inbox-reaper process` keeps no resume state: every run searches the whole
+INBOX and classifies each message it finds. Deletions are applied per batch, so
+if a run is interrupted (CTRL-C, crash, lost connection), emails from batches
+that were already deleted are gone and the next run simply works through what
+remains. Kept emails, and everything in a `--dry-run`, are classified again.
 
-```bash
-# Start processing
-inbox-reaper process
-
-# ... interrupted after 50,000 emails processed ...
-
-# Resume from last checkpoint
-inbox-reaper process
-# Prompts: "Do you want to resume from the last checkpoint? [Y/n]"
-
-# Clear checkpoint and start fresh
-inbox-reaper checkpoint clear
-
-# View checkpoint status
-inbox-reaper checkpoint status
-```
-
-**Checkpoint Features:**
-- Exactly-once processing (no duplicate deletions)
-- UID watermarking for IMAP pagination
-- Persistent sender statistics
-- Progress tracking with ETA
+To skip the AI on a re-run, run `inbox-reaper learn` once and pass the result
+with `--rules rules.json`; senders it covers are then decided without the model.
 
 ### Performance Tuning
 
@@ -258,7 +241,7 @@ inbox-reaper process --email user@gmail.com --concurrent-limit 16  # For 32GB+ u
 
 **Batch Size Tuning:**
 ```bash
-# Smaller batches: More frequent checkpoints, less memory
+# Smaller batches: Deletions applied more often, less memory
 inbox-reaper process --batch-size 50
 
 # Larger batches: Fewer IMAP roundtrips, more memory
@@ -281,21 +264,15 @@ inbox-reaper process --batch-size 200
 **Processing Options:**
 - `--model TEXT` - MLX model name from Hugging Face (default: mlx-community/Llama-3.2-3B-Instruct-4bit)
 - `--batch-size INT` - Emails per batch (default: 50)
-- `--fetch-size INT` - IMAP fetch size per request (default: 100)
-- `--concurrent-limit INT` - Max concurrent parallel tasks (default: 25)
+- `--concurrent-limit INT` - Max concurrent AI classification requests (default: 25)
 - `--dry-run/--no-dry-run` - Enable dry-run mode (default: True)
-- `--checkpoint-path TEXT` - Checkpoint database path (default: checkpoints.db)
 - `--email TEXT` - Email address to process (required unless in config file)
+- `--max-emails INT` - Stop after this many emails (for testing)
 
 **Filter Configuration:**
 - `--keywords TEXT` - Critical keywords to trigger KEEP (repeatable)
 - `--whitelist-domain TEXT` - Whitelisted domains to trigger KEEP (repeatable)
-- `--auto-delete-threshold INT` - Marketing emails before auto-delete (default: 5)
-- `--enable-sender-tracking/--no-sender-tracking` - Track sender patterns (default: True)
-
-**Legacy Options:**
-- `--use-adk/--no-adk` - Use Google ADK (experimental, default: False)
-- `--no-langgraph` - Use legacy sequential pipeline (default: False)
+- `--rules FILE` - Learned rules from `inbox-reaper learn`, applied before heuristics and AI
 
 ## LangGraph Workflow Example
 
@@ -344,11 +321,10 @@ print(f"Deleted: {final_state['total_deleted']}")
 
 1. **Parallel-First Architecture** - LangGraph Send() API for dynamic parallelism
 2. **Thread-Safe State Management** - Annotated reducers for concurrent updates
-3. **Resumable by Default** - Automatic checkpointing with UID watermarking
-4. **Layered Decision Pipeline** - Cheap filters first, expensive AI last
-5. **Type Safety** - Full type hints with Pydantic validation
-6. **Immutability** - State objects are frozen TypedDicts
-7. **Pure Functions** - Reducers and agents are pure transformations
+3. **Layered Decision Pipeline** - Cheap filters first, expensive AI last
+4. **Type Safety** - Full type hints with Pydantic validation
+5. **Immutability** - State objects are frozen TypedDicts
+6. **Pure Functions** - Reducers and agents are pure transformations
 
 ## Architecture Documentation
 
