@@ -1,8 +1,10 @@
 # Inbox Reaper
 
 Email classification and cleaning system: an IMAP inbox is streamed through
-deterministic filters, optional learned rules and a local MLX language model,
-and messages classified as marketing are deleted in batches.
+deterministic filters, a feature-vector combiner trained on your own labels,
+and a local MLX language model; messages classified as deletable are deleted in
+batches. Precision comes first: a wrong delete is the error that matters, so
+every deletion path can be measured on labelled mail (`inbox-reaper evaluate`).
 
 ## Architecture
 
@@ -25,13 +27,19 @@ and messages classified as marketing are deleted in batches.
    returns a decision wins:
    1. *Hard keeps* - important attachments, `--keywords`, `--whitelist-domain`
       (always first, never overridden)
-   2. *Learned rules* - sender/domain rules from `--rules` (see below)
-   3. *Heuristics* - transactional patterns (receipts, orders, shipping) keep;
-      marketing indicators (List-Unsubscribe, "view in browser", tracking
-      subdomains) delete
-   4. *AI* - the MLX model. A single worker groups waiting emails into one
-      batched generation call of up to `--concurrent-limit` emails, in a
-      thread so fetching continues; the model is never called concurrently
+   2. *Time rule* - one-time codes and sign-in links are kept for their first
+      30 minutes and deleted once over an hour old
+   3. *Learned rules* - sender/domain rules from `--rules` (see below)
+   4. With `--combiner`: the *feature vector* (below) is scored by the trained
+      combiner, which deletes or keeps only when confident.
+      Without one: the *heuristics* - transactional patterns keep; marketing
+      indicators (unsubscribe text, "view in browser", tracking subdomains)
+      delete
+   5. *AI* - the MLX model, for whatever is still undecided (with a combiner it
+      also receives a one-line summary of the signals that fired). A single
+      worker groups waiting emails into one batched generation call of up to
+      `--concurrent-limit` emails, in a thread so fetching continues; the model
+      is never called concurrently
 
    Any error while classifying an email keeps it.
 5. **Delete** - delete decisions are buffered by `BatchCoordinator` and sent as
@@ -41,6 +49,30 @@ and messages classified as marketing are deleted in batches.
 `inbox-reaper learn` reuses steps 1-4 read-only (it has no delete path) and
 turns the decisions into a reviewable `rules.json`.
 
+### Feature vector and combiner
+
+`features.py` runs independent processors over each email; each appends named
+features (`<processor>.<name>`, mostly 0/1 flags or scores in [0, 1]):
+
+| Processor | Signals |
+| --- | --- |
+| `filter` | each deterministic check's verdict (attachment, keyword, whitelist, transactional, marketing) |
+| `header` | List-Id, List-Unsubscribe (and one-click), Precedence: bulk, Auto-Submitted, Feedback-ID, bulk-mail platform headers, reply threading, DKIM signer vs From domain, SPF/DMARC, Reply-To elsewhere, recipient count, Outlook bulk/spam scores, GitHub notification reason |
+| `link` | link count, share of tracking and off-site links (Outlook Safe Links unwrapped), images, tracking pixels |
+| `sender` | free-mail provider, automated local part (no-reply, notifications, ...), subdomain sender, display name |
+| `rule` | a learned rule's keep/delete verdict |
+| `time` | lifetime class (minutes / days / forever), expired, fresh, age |
+
+`combiner.py` is a logistic regression over that vector, trained on labelled
+samples. It deletes only above a threshold set from cross-validation so that
+no held-out keep-labelled email would have been deleted, keeps below a low
+threshold, and sends everything in between to the AI. Keep labels are
+weighted by how bad losing the email would be.
+
+Email bodies reach the models with HTML stripped, invisible spacer characters
+removed and every URL replaced by `[link: domain]` (URLs were ~30% of the text
+on a real inbox sample).
+
 ### Key Modules
 
 | Module | Role |
@@ -49,15 +81,14 @@ turns the decisions into a reviewable `rules.json`.
 | `langgraph_streaming.py` | IMAP session, producer and prefetch, classification order, `process`/`learn` runners |
 | `imap_client.py` | Async IMAP client (aioimaplib): XOAUTH2 login, batched fetch, MIME parsing, delete |
 | `agents.py` | Deterministic filters and the AI classifier (`classify_with_ai`) |
+| `features.py` | Feature processors, time-sensitivity rule, signal summaries for the AI |
+| `combiner.py` | Trained logistic-regression combiner and precision-first thresholds |
+| `labeling.py` | Samples, multi-dimensional labels, comparison, training, evaluation |
 | `rules.py` | `RuleSet` (load/save/match) and `RuleLearner` |
 | `mlx_backend.py` | MLX model loading and text generation |
 | `batch_coordinator.py` | Buffers UIDs and flushes them in batches |
 | `oauth_flow.py`, `credential_helper.py` | OAuth login and refresh, keyring storage |
 | `state.py` | Pydantic models: `Config`, `Email`, `EmailDecision` |
-
-`langgraph_dag.py`, `langgraph_state.py` and `checkpoint_manager.py` hold an
-earlier batch design (parallel `Send()` fan-out with SQLite checkpointing).
-They are covered by tests but are not used by any CLI command.
 
 ## Installation
 
@@ -183,6 +214,38 @@ disagrees. Each entry looks like:
 Delete an entry to drop it, flip `action`, or add your own with `"source": "manual"`.
 Sender rules take precedence over domain rules; domain rules also cover subdomains.
 
+### Training the combiner on your own labels
+
+All files stay on your machine; samples contain email contents, so keep them
+private.
+
+```bash
+# 1. Read-only random sample of your inbox
+inbox-reaper sample --email user@gmail.com -n 300 -o samples.jsonl
+
+# 2. Label it: for each email, keep/delete, how long it stays useful
+#    (minutes/days/forever), a category, and how bad losing it would be.
+#    Resumable; other labellers' answers are never shown.
+inbox-reaper label samples.jsonl -o labels-human.jsonl
+#    Label where other labellers (e.g. a model) disagree first:
+inbox-reaper label samples.jsonl -o labels-human.jsonl --prioritize labels-model.jsonl
+
+# 3. Compare labellers per dimension and list keep/delete disagreements
+inbox-reaper compare-labels labels-human.jsonl labels-model.jsonl --samples samples.jsonl
+
+# 4. Train (when several files label an email, the first wins)
+inbox-reaper train samples.jsonl --labels labels-human.jsonl --labels labels-model.jsonl
+
+# 5. Measure delete precision and recall per path, today vs with the combiner
+inbox-reaper evaluate samples.jsonl --labels labels-human.jsonl --combiner combiner.json
+
+# 6. Use it
+inbox-reaper process --email user@gmail.com --combiner combiner.json
+```
+
+Training applies each label's lifetime: an email labelled *keep* but useful for
+only minutes or days counts as *delete* once it is past that when sampled.
+
 ### Configuration Files
 
 Instead of passing CLI arguments each time, you can use a configuration file:
@@ -274,6 +337,7 @@ inbox-reaper process --batch-size 200
 - `--keywords TEXT` - Critical keywords to trigger KEEP (repeatable)
 - `--whitelist-domain TEXT` - Whitelisted domains to trigger KEEP (repeatable)
 - `--rules FILE` - Learned rules from `inbox-reaper learn`, applied before heuristics and AI
+- `--combiner FILE` - Trained combiner from `inbox-reaper train`; replaces the heuristics as decision-makers (they become features) and sends only contested emails to the AI
 
 ## Python API
 
@@ -295,32 +359,15 @@ asyncio.run(run_streaming_pipeline(config.model_copy(update={"rules_path": "rule
 
 ## Design Principles
 
-1. **Never delete by surprise** - dry-run by default, hard keeps can't be
-   overridden, errors keep the email, and `learn` is read-only
+1. **Precision over recall** - a wrong delete is unforgivable, a missed one is
+   harmless: dry-run by default, hard keeps can't be overridden, errors keep the
+   email, `learn`/`sample` are read-only, and the combiner deletes only above
+   every held-out keep
 2. **Layered decision pipeline** - cheap deterministic checks first, the model last
 3. **Reviewable rules** - learned decisions are plain JSON you can edit before applying
-4. **Overlap I/O with inference** - one IMAP connection, batched fetches, background prefetch
-5. **Type safety** - full type hints with Pydantic models, checked by mypy
-
-## Architecture Documentation
-
-These documents describe the earlier batch DAG design (`langgraph_dag.py`)
-and are kept for background; the pipeline above is what `process` runs today:
-- **[DESIGN.md](DESIGN.md)** - High-level design patterns and learnings
-  - LangGraph architecture with parallel processing
-  - Reducer patterns and thread-safety guarantees
-  - Checkpoint format and resume process
-  - Performance benchmarks and tuning guide
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Detailed graph structure
-  - Node responsibilities and data flow
-  - State schema with reducer annotations
-  - Subgraph design patterns
-  - Integration points (IMAP, MLX, SQLite)
-- **[docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)** - Parallel processing deep dive
-  - Send() API usage patterns
-  - Synchronization primitives
-  - Batch optimization techniques
-  - Performance benchmarks and scaling analysis
+4. **Measured, not assumed** - `evaluate` reports precision per deletion path on your labels
+5. **Overlap I/O with inference** - one IMAP connection, batched fetches, background prefetch
+6. **Type safety** - full type hints with Pydantic models, checked by mypy
 
 ## Next Steps
 
@@ -330,6 +377,7 @@ and are kept for background; the pipeline above is what `process` runs today:
 - [x] Batched email deletion
 - [x] Read-only rule learning (`learn`) and rule application (`process --rules`)
 - [x] Batched AI classification (`--concurrent-limit`)
+- [x] Feature-vector combiner trained on your labels, with per-path precision evaluation
 - [ ] Resume an interrupted run without re-classifying kept emails
 
 ## Development

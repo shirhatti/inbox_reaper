@@ -283,7 +283,6 @@ class AsyncIMAPClient:
     ) -> list[Email]:
         """Fetch emails with UID-based windowing.
 
-        This implements the UID windowing pattern from DESIGN.md for pagination.
         Fetches emails in reverse order (newest first) with optional UID filtering.
 
         Args:
