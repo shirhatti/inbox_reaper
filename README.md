@@ -60,7 +60,8 @@ features (`<processor>.<name>`, mostly 0/1 flags or scores in [0, 1]):
 | `filter` | each deterministic check's verdict (attachment, keyword, whitelist, transactional, marketing) |
 | `header` | List-Id, List-Unsubscribe (and one-click), Precedence: bulk, Auto-Submitted, Feedback-ID, bulk-mail platform headers, reply threading, DKIM signer vs From domain, SPF/DMARC, Reply-To elsewhere, recipient count, Outlook bulk/spam scores, GitHub notification reason |
 | `link` | link count, share of tracking and off-site links (Outlook Safe Links unwrapped), images, tracking pixels |
-| `sender` | free-mail provider, automated local part (no-reply, notifications, ...), subdomain sender, display name |
+| `sender` | free-mail provider, automated local part (no-reply, notifications, ...), subdomain sender, display name, written by a person (name matches the address), shared "via" a service |
+| `content` | record words (receipt, statement, order, reservation...) versus promotional wording, prices, emoji, caps and "!" in the subject; order/booking numbers, account endings, amounts with cents; addressed to you, your name in the subject or greeting, generic "Dear customer" greetings; word count and link/image density |
 | `rule` | a learned rule's keep/delete verdict |
 | `time` | lifetime class (minutes / days / forever), expired, fresh, age |
 

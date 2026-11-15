@@ -173,6 +173,20 @@ _AUTOMATED_LOCAL_RE = re.compile(
 )
 
 
+_PERSON_NAME_RE = re.compile(r"[A-Z][a-z]+(?:[-'][A-Z]?[a-z]+)?")
+_VIA_RE = re.compile(r"\bvia\b", re.IGNORECASE)
+
+
+def _is_person(name: str, local: str) -> bool:
+    """'Matthew Prince' <mprince@...>: two or three name-like words, one of
+    which (three letters or more) appears in the address."""
+    words = name.replace('"', "").split()
+    if not 2 <= len(words) <= 3 or not all(_PERSON_NAME_RE.fullmatch(w) for w in words):
+        return False
+    local = re.sub(r"[^a-z]", "", local)
+    return any(len(w) >= 3 and w.lower() in local for w in words)
+
+
 def sender_features(email: Email, ctx: FeatureContext) -> FeatureVector:
     name, address = parseaddr(email.sender)
     local, _, domain = address.lower().rpartition("@")
@@ -181,6 +195,120 @@ def sender_features(email: Email, ctx: FeatureContext) -> FeatureVector:
         "automated_local_part": _flag(_AUTOMATED_LOCAL_RE.search(local)),
         "subdomain_sender": _flag(domain.count(".") >= 2),
         "has_display_name": _flag(name.strip()),
+        # A person writing, not a brand ("Zachary Gerard <zach-gerard@...>")
+        "person": _flag(_is_person(name, local)),
+        # A person through a service ("Vilas via Dropbox", "Anthony via RT")
+        "via_service": _flag(_VIA_RE.search(name)),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Content: records versus promotions, identifiers, personalisation, structure
+# ---------------------------------------------------------------------------
+
+# Words that make an email a record worth keeping, even when sent in bulk
+_RECORD_SUBJECT_RE = re.compile(
+    r"\b(receipts?|statements?|invoices?|orders?|reservations?|bookings?|"
+    r"itinerar(y|ies)|redemptions?|applications?|tax|1099|w-?2|polic(y|ies)|"
+    r"claims?|refunds?|payments?|bills?|deposits?|withdrawals?|transfers?|"
+    r"confirm(ed|ation)|cancel(l)?ed|contracts?|lease|documents?|"
+    r"tickets? (for|to)|e-?tickets?)\b",
+    re.IGNORECASE,
+)
+_RECORD_BODY_RE = re.compile(
+    r"\b(order (number|total|summary|date)|total (charged|paid|amount)|"
+    r"amount (due|paid|charged)|subtotal|account (number|ending)|"
+    r"transaction (id|date|details)|payment method|billing address|"
+    r"confirmation (number|code)|reservation (number|code)|"
+    r"(available|ready) to view|view your statement)\b",
+    re.IGNORECASE,
+)
+_PROMO_RE = re.compile(
+    r"\d+\s?% off|\bsale\b|\bdeals?\b|\bsave( up to)?\b|limited[- ]time|"
+    r"last chance|ends (today|tonight|soon|sunday|midnight)|free shipping|"
+    r"\bexclusive\b|new arrivals|don'?t miss|\bshop (now|the)\b|"
+    r"\b(special )?offers?\b|\bcoupons?\b|promo code|\bfree\b|"
+    r"best[- ]sellers?|\bjust dropped\b|\bhurry\b|\btreat yourself\b",
+    re.IGNORECASE,
+)
+_PRICE_RE = re.compile(r"[$£€₹]\s?\d|\d+\s?%")
+# Amounts with cents ($42.10) appear on receipts; promotions say "$20 off"
+_AMOUNT_RE = re.compile(r"[$£€₹]\s?\d[\d,]*\.\d{2}\b|\b(USD|INR|EUR)\s?\d")
+# Order/booking numbers; not bare "#1234", which is mostly GitHub issue numbers
+_IDENTIFIER_RE = re.compile(
+    r"\b(order|confirmation|reservation|booking|invoice|receipt|record locator)"
+    r"\s*(#|no\.?|number|code|id)?\s*[:#]?\s*(?=[A-Z0-9-]*\d)[A-Z0-9-]{5,}\b",
+    re.IGNORECASE,
+)
+_ACCOUNT_ENDING_RE = re.compile(
+    r"\bend(ing|s) in:?\s*\d{4}\b|[*xX•]{2,}\s?\d{4}\b", re.IGNORECASE
+)
+# "Dear customer"; not "Hi there", which real account notices use too
+_GENERIC_GREETING_RE = re.compile(
+    r"\b(dear|hi|hello)\s+(valued\s+)?(customer|member|client|guest|"
+    r"subscriber|shopper|traveler|user|cardmember)\b",
+    re.IGNORECASE,
+)
+_SHARED_RE = re.compile(r"\bshared\b.*\bwith you\b|\binvited you\b", re.IGNORECASE)
+_EMOJI_RE = re.compile("[\U0001f000-\U0001faff\u2600-\u27bf\u2b00-\u2bff]")
+_CAPS_WORD_RE = re.compile(r"\b[A-Z]{3,}\b")
+_WORD_RE = re.compile(r"\w+")
+
+
+def user_names(email: Email, config: Config) -> list[str]:
+    """The mailbox owner's name words: from the To/Cc display name for their
+    own address when shown, else from the address's local part."""
+    me = config.email.lower()
+    for name, address in getaddresses(
+        [email.headers.get("to", ""), email.headers.get("cc", "")]
+    ):
+        if me and address.lower() == me and name:
+            return [w for w in re.findall(r"[^\W\d_]+", name) if len(w) >= 3]
+    # Fall back to the address itself: jane.doe@... -> jane, doe
+    return [w for w in re.findall(r"[a-z]+", me.partition("@")[0]) if len(w) >= 4]
+
+
+def _addressed_to_me(email: Email, config: Config) -> bool:
+    me = config.email.lower()
+    to = getaddresses([email.headers.get("to", "")])
+    return bool(me) and any(address.lower() == me for _, address in to)
+
+
+def content_features(email: Email, ctx: FeatureContext) -> FeatureVector:
+    subject, body = email.subject, email.body
+    names = user_names(email, ctx.config)
+    opening = body[:300]
+    name_re = (
+        re.compile(r"\b(" + "|".join(map(re.escape, names)) + r")\b", re.IGNORECASE)
+        if names
+        else None
+    )
+    words = len(_WORD_RE.findall(body))
+    caps = [w for w in _CAPS_WORD_RE.findall(subject) if len(w) >= 3]
+    return {
+        # Records versus promotions
+        "record_subject": _flag(_RECORD_SUBJECT_RE.search(subject)),
+        "record_body": min(len(_RECORD_BODY_RE.findall(body)), 3) / 3,
+        "promo_subject": _flag(_PROMO_RE.search(subject)),
+        "promo_body": min(len(_PROMO_RE.findall(body)), 5) / 5,
+        "price_subject": _flag(_PRICE_RE.search(subject)),
+        "emoji_subject": _flag(_EMOJI_RE.search(subject)),
+        "caps_subject": _flag(len(caps) >= 2),
+        "exclaim_subject": _flag("!" in subject),
+        # Identifiers that records carry
+        "identifier": _flag(_IDENTIFIER_RE.search(f"{subject}\n{body}")),
+        "account_ending": _flag(_ACCOUNT_ENDING_RE.search(f"{subject}\n{body}")),
+        "amount": _flag(_AMOUNT_RE.search(f"{subject}\n{body}")),
+        # Personalisation
+        "addressed_to_me": _flag(_addressed_to_me(email, ctx.config)),
+        "name_subject": _flag(name_re and name_re.search(subject)),
+        "name_greeting": _flag(name_re and name_re.search(opening)),
+        "generic_greeting": _flag(_GENERIC_GREETING_RE.search(opening)),
+        "shared_with_you": _flag(_SHARED_RE.search(subject)),
+        # Structure: a promotion is mostly layout, a record mostly content
+        "words": math.log1p(words) / math.log1p(5000),
+        "link_density": min(len(email.links) / max(words, 1) * 100, 10) / 10,
+        "image_density": min(email.image_count / max(words, 1) * 100, 10) / 10,
     }
 
 
@@ -315,6 +443,7 @@ PROCESSORS: dict[str, Processor] = {
     "header": header_features,
     "link": link_features,
     "sender": sender_features,
+    "content": content_features,
     "rule": rule_features,
     "time": temporal_features,
 }
@@ -349,6 +478,15 @@ _DESCRIPTIONS = {
     "sender.freemail": "sent from a personal email provider",
     "sender.automated_local_part": "automated sender address",
     "filter.transactional_keep": "looks transactional (order, payment or receipt)",
+    "content.record_subject": "subject names a record (receipt, statement, order...)",
+    "content.identifier": "carries an order, booking or reference number",
+    "content.account_ending": "mentions an account or card ending",
+    "content.name_subject": "addresses you by name in the subject",
+    "content.name_greeting": "greets you by name",
+    "content.promo_subject": "promotional subject (sale, % off, offer...)",
+    "content.generic_greeting": "generic greeting (dear customer...)",
+    "sender.person": "written by a person, not a brand",
+    "sender.via_service": "shared by a person through a service",
     "link.tracking_pixel": "contains a tracking pixel",
 }
 

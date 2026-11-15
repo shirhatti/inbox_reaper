@@ -8,6 +8,7 @@ from inbox_reaper.features import (
     FeatureContext,
     Lifetime,
     check_expiry,
+    content_features,
     describe_features,
     email_lifetime,
     extract_features,
@@ -16,6 +17,7 @@ from inbox_reaper.features import (
     rule_features,
     sender_features,
     temporal_features,
+    user_names,
 )
 from inbox_reaper.rules import Rule, RuleMatch, RuleSet
 from inbox_reaper.state import Config, Decision, Email, FilterReason
@@ -155,9 +157,25 @@ class TestOtherProcessors:
             "automated_local_part": 0.0,
             "subdomain_sender": 0.0,
             "has_display_name": 1.0,
+            "person": 0.0,
+            "via_service": 0.0,
         }
         f = sender_features(make_email(sender="no-reply@mail.bank.example"), CTX)
         assert (f["automated_local_part"], f["subdomain_sender"]) == (1.0, 1.0)
+
+    def test_person_and_via_service_senders(self):
+        person = sender_features(
+            make_email(sender="Matthew Prince <mprince@corp.example>"), CTX
+        )
+        assert (person["person"], person["via_service"]) == (1.0, 0.0)
+        for brand in (
+            "Bank of America <onlinebanking@bank.example>",
+            "Nordstrom Rack Stores <services@em.shop.example>",
+            "Jane Doe <deals@shop.example>",  # name not in the address
+        ):
+            assert sender_features(make_email(sender=brand), CTX)["person"] == 0.0
+        via = sender_features(make_email(sender="Vilas via Dropbox <n@d.example>"), CTX)
+        assert via["via_service"] == 1.0
 
     def test_rule_features(self):
         rules = RuleSet(
@@ -245,3 +263,65 @@ class TestTimeSensitivity:
         )
         assert (f["lifetime_minutes"], f["expired"], f["fresh"]) == (1.0, 1.0, 0.0)
         assert 0 < f["log_age_days"] < 1
+
+
+class TestContentFeatures:
+    def test_record_email(self):
+        email = make_email(
+            "Your October account statement is available",
+            sender="PayPal <paypal@mail.paypal.example>",
+            body=(
+                "Dear Sourabh, your statement for account ending in 1234 is ready "
+                "to view. Order number: A1B2C3D4. Total charged: $42.10"
+            ),
+            headers={"to": "Sourabh Shirhatti <me@example.com>"},
+        )
+        f = content_features(email, CTX)
+        for flag in (
+            "record_subject",
+            "identifier",
+            "account_ending",
+            "amount",
+            "addressed_to_me",
+            "name_greeting",
+        ):
+            assert f[flag] == 1.0, flag
+        assert f["record_body"] > 0
+        assert (f["promo_subject"], f["generic_greeting"]) == (0.0, 0.0)
+
+    def test_promotion(self):
+        email = make_email(
+            "🔥 HUGE SALE: 40% off everything!",
+            body="Hello valued customer, shop now. Free shipping. Last chance!",
+            links=[f"https://click.shop.example/{i}" for i in range(10)],
+            image_count=8,
+        )
+        f = content_features(email, CTX)
+        for flag in (
+            "promo_subject",
+            "price_subject",
+            "emoji_subject",
+            "caps_subject",
+            "exclaim_subject",
+            "generic_greeting",
+        ):
+            assert f[flag] == 1.0, flag
+        assert f["promo_body"] >= 0.6
+        assert f["link_density"] == 1.0 and f["record_subject"] == 0.0
+        assert f["addressed_to_me"] == 0.0
+
+    def test_github_issue_numbers_and_hi_there_are_not_record_signals(self):
+        email = make_email(
+            "Re: [org/repo] Fix parser (#12345)", body="Hi there, merged #12345."
+        )
+        f = content_features(email, CTX)
+        assert (f["identifier"], f["generic_greeting"]) == (0.0, 0.0)
+
+    def test_user_names_from_display_name_or_address(self):
+        named = make_email(headers={"to": "Jane Q Doe <me@example.com>"})
+        assert user_names(named, CTX.config) == ["Jane", "Doe"]
+        config = Config(email="jane.doe@example.com")
+        assert user_names(make_email(), config) == ["jane"]
+        greeted = make_email(body="Hi Jane, your order shipped")
+        ctx = FeatureContext(config=config, now=NOW)
+        assert content_features(greeted, ctx)["name_greeting"] == 1.0
