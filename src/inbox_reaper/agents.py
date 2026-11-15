@@ -1,7 +1,7 @@
 """Agent functions for email classification.
 
-All agents are pure functions: ProcessingState -> ProcessingState
-Each agent processes emails in the current batch and adds decisions.
+Each check is a pure function (email, config) -> EmailDecision | None; the AI
+classifier is the one function with a side effect (MLX inference).
 """
 
 import json
@@ -18,7 +18,6 @@ from .state import (
     Email,
     EmailDecision,
     FilterReason,
-    SenderStats,
 )
 from .text_utils import (  # noqa: F401 - re-exported for callers/tests
     HTMLTextExtractor,
@@ -144,23 +143,6 @@ def check_whitelist(email: Email, config: Config) -> EmailDecision | None:
                     reason=FilterReason.WHITELIST,
                     confidence=1.0,
                 )
-    return None
-
-
-def check_sender_pattern(
-    email: Email, sender_stats: SenderStats, config: Config
-) -> EmailDecision | None:
-    """Check if sender should be auto-deleted based on history.
-
-    Pure function that returns a DELETE decision if sender has pattern of marketing.
-    """
-    if sender_stats.should_auto_delete(config.auto_delete_threshold):
-        return EmailDecision(
-            email=email,
-            decision=Decision.DELETE,
-            reason=FilterReason.SENDER_PATTERN,
-            confidence=1.0,
-        )
     return None
 
 

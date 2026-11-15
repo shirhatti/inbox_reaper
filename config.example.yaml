@@ -33,11 +33,6 @@ batch_size: 50
 # Useful for testing with a smaller subset
 max_emails: null
 
-# Decision Thresholds
-# -------------------
-# Number of marketing emails from a sender before auto-deleting
-auto_delete_threshold: 5
-
 # Keywords & Whitelist
 # --------------------
 # Critical keywords that trigger KEEP decision
@@ -58,14 +53,6 @@ important_extensions:
   - .docx
   - .xlsx
   - .pptx
-
-# Performance Settings
-# --------------------
-# Enable pipelining for faster processing
-enable_pipelining: true
-
-# Enable sender tracking for auto-delete decisions
-enable_sender_tracking: true
 
 # Safety Settings
 # ---------------

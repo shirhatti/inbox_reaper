@@ -13,8 +13,6 @@
   "batch_size": 50,
   "max_emails": null,
 
-  "auto_delete_threshold": 5,
-
   "keywords": [
     "important",
     "urgent",
@@ -33,9 +31,6 @@
     ".xlsx",
     ".pptx"
   ],
-
-  "enable_pipelining": true,
-  "enable_sender_tracking": true,
 
   "dry_run": true
 }
