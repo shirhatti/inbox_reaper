@@ -306,8 +306,13 @@ def parse_ai_response(response: str) -> AIClassificationResponse:
     return AIClassificationResponse(**json.loads(response_text[json_start:json_end]))
 
 
-def ai_messages(email: Email) -> list[dict[str, str]]:
-    """Chat messages asking the model to classify ``email``."""
+def ai_messages(email: Email, signals: str = "") -> list[dict[str, str]]:
+    """Chat messages asking the model to classify ``email``.
+
+    ``signals`` is a short summary of what the automated checks found (see
+    :func:`inbox_reaper.features.describe_features`); it is shown as context.
+    """
+    signal_line = f"Automated checks: {signals}\n\n" if signals else ""
     # Strip HTML and truncate symmetrically to preserve footer (unsubscribe links, etc.)
     body_preview = truncate_symmetric(email.body)
 
@@ -341,7 +346,7 @@ Subject: {email.subject}
 From: {email.sender}
 Body: {body_preview}
 
-Analyze whether this is marketing/promotional that can be safely deleted.
+{signal_line}Analyze whether this is marketing/promotional that can be safely deleted.
 Output format: {{"is_marketing": true, "confidence": 0.95}}""",
         },
     ]
@@ -386,12 +391,12 @@ def ai_decision(email: Email, response: str, config: Config) -> EmailDecision:
     )
 
 
-def classify_with_ai(email: Email, config: Config) -> EmailDecision:
+def classify_with_ai(email: Email, config: Config, signals: str = "") -> EmailDecision:
     """Classify one email with the MLX model; KEEP on any failure."""
     try:
         response = generate_text(
             model_name=config.model_name,
-            messages=ai_messages(email),
+            messages=ai_messages(email, signals),
             max_tokens=AI_MAX_TOKENS,
         )
     except Exception as e:
@@ -402,7 +407,9 @@ def classify_with_ai(email: Email, config: Config) -> EmailDecision:
     return ai_decision(email, response, config)
 
 
-def classify_batch_with_ai(emails: list[Email], config: Config) -> list[EmailDecision]:
+def classify_batch_with_ai(
+    emails: list[Email], config: Config, signals: list[str] | None = None
+) -> list[EmailDecision]:
     """Classify several emails in one batched MLX call, in input order.
 
     Batching amortizes decoding across emails. If the whole call fails every
@@ -412,11 +419,16 @@ def classify_batch_with_ai(emails: list[Email], config: Config) -> list[EmailDec
         return []
     if len(emails) == 1:
         # Plain generation is ~10% faster than a batch of one
-        return [classify_with_ai(emails[0], config)]
+        return [classify_with_ai(emails[0], config, signals[0] if signals else "")]
     try:
         responses = generate_text_batch(
             model_name=config.model_name,
-            messages_list=[ai_messages(email) for email in emails],
+            messages_list=[
+                ai_messages(email, sig)
+                for email, sig in zip(
+                    emails, signals or [""] * len(emails), strict=True
+                )
+            ],
             max_tokens=AI_MAX_TOKENS,
         )
     except Exception as e:

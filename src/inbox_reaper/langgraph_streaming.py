@@ -9,6 +9,7 @@ classified, so network latency overlaps with (much slower) AI inference.
 import asyncio
 import contextlib
 import logging
+import random
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import Any, Self, TypedDict
@@ -26,11 +27,13 @@ from .agents import (
     classify_batch_with_ai,
 )
 from .batch_coordinator import BatchCoordinator
+from .combiner import Combiner
 from .credential_helper import get_credentials
+from .features import FeatureContext, check_expiry, describe_features, extract_features
 from .imap_client import AsyncIMAPClient, IMAPConnectionError
 from .oauth_flow import refresh_if_expiring
 from .rules import RuleLearner, RuleSet
-from .state import Config, Email, EmailDecision
+from .state import Config, Decision, Email, EmailDecision, FilterReason
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +156,7 @@ class StreamingState(TypedDict):
     config: Config
     rules: RuleSet | None
     ai: "AIClassifier | None"
+    combiner: Combiner | None
 
 
 async def imap_producer(
@@ -210,6 +214,7 @@ async def imap_producer(
                     "config": config,
                     "rules": None,
                     "ai": None,
+                    "combiner": None,
                 }
             else:
                 logger.warning("Could not fetch email %s, skipping", uid)
@@ -246,7 +251,8 @@ async def prefetch[T](source: AsyncGenerator[T], depth: int) -> AsyncIterator[T]
             await task
 
 
-type AIClassifier = Callable[[Email], Awaitable[EmailDecision]]
+# (email, signals summary) -> decision
+type AIClassifier = Callable[[Email, str], Awaitable[EmailDecision]]
 
 
 class AIBatcher:
@@ -261,7 +267,7 @@ class AIBatcher:
     def __init__(self, config: Config, max_batch: int):
         self._config = config
         self._max_batch = max(1, max_batch)
-        self._queue: asyncio.Queue[tuple[Email, asyncio.Future[EmailDecision]]] = (
+        self._queue: asyncio.Queue[tuple[Email, str, asyncio.Future[EmailDecision]]] = (
             asyncio.Queue()
         )
         self._worker: asyncio.Task[None] | None = None
@@ -278,15 +284,15 @@ class AIBatcher:
                 await self._worker
         # Nothing should be waiting by now, but never leave a caller hanging
         while not self._queue.empty():
-            _, future = self._queue.get_nowait()
+            *_, future = self._queue.get_nowait()
             future.cancel()
 
-    async def classify(self, email: Email) -> EmailDecision:
+    async def classify(self, email: Email, signals: str = "") -> EmailDecision:
         """Queue ``email`` for the next batch and wait for its decision."""
         future: asyncio.Future[EmailDecision] = (
             asyncio.get_running_loop().create_future()
         )
-        await self._queue.put((email, future))
+        await self._queue.put((email, signals, future))
         return await future
 
     async def _run(self) -> None:
@@ -295,21 +301,22 @@ class AIBatcher:
             while len(batch) < self._max_batch and not self._queue.empty():
                 batch.append(self._queue.get_nowait())
 
-            emails = [email for email, _ in batch]
+            emails = [email for email, _, _ in batch]
+            signals = [sig for _, sig, _ in batch]
             self.batches += 1
             logger.info("AI classifying a batch of %s emails", len(emails))
             try:
                 # Blocking MLX inference; keep the event loop free for IMAP
                 decisions = await asyncio.to_thread(
-                    classify_batch_with_ai, emails, self._config
+                    classify_batch_with_ai, emails, self._config, signals
                 )
             except Exception as e:
-                for _, future in batch:
+                for *_, future in batch:
                     if not future.done():
                         future.set_exception(e)
                 continue
 
-            for (_, future), decision in zip(batch, decisions, strict=True):
+            for (*_, future), decision in zip(batch, decisions, strict=True):
                 if not future.done():
                     future.set_result(decision)
 
@@ -345,16 +352,30 @@ async def for_each_concurrently[T](
 
 
 def classify_deterministic(
-    email: Email, config: Config, rules: RuleSet | None = None
+    email: Email,
+    config: Config,
+    rules: RuleSet | None = None,
+    *,
+    heuristics: bool = True,
 ) -> EmailDecision | None:
-    """Hard keeps, then learned rules, then heuristics; None if nothing matched."""
+    """Hard keeps, expiry, learned rules, then heuristics; None if nothing matched.
+
+    With ``heuristics=False`` the heuristic filters are skipped (the combiner
+    sees them as features instead).
+    """
     for check in HARD_KEEP_FILTERS:
         if decision := check(email, config):
             return decision
 
+    # Time-sensitive mail: expired codes go even if a sender rule would keep them
+    if decision := check_expiry(email, config):
+        return decision
+
     if rules and (decision := rules.decide(email)):
         return decision
 
+    if not heuristics:
+        return None
     for check in HEURISTIC_FILTERS:
         if decision := check(email, config):
             return decision
@@ -362,12 +383,36 @@ def classify_deterministic(
 
 
 async def classify_email(
-    email: Email, config: Config, rules: RuleSet | None, ai: AIClassifier
+    email: Email,
+    config: Config,
+    rules: RuleSet | None,
+    ai: AIClassifier,
+    combiner: Combiner | None = None,
 ) -> EmailDecision:
-    """Apply deterministic filters and rules, falling back to ``ai``."""
-    if decision := classify_deterministic(email, config, rules):
+    """Classify one email.
+
+    Hard keeps, expiry and learned rules always come first. Then, with a
+    combiner, the feature vector decides when it is confident and contested
+    mail goes to ``ai`` along with a summary of the signals; without one, the
+    heuristic filters run and ``ai`` handles whatever they leave.
+    """
+    if decision := classify_deterministic(
+        email, config, rules, heuristics=combiner is None
+    ):
         return decision
-    return await ai(email)
+    if combiner is None:
+        return await ai(email, "")
+
+    features = extract_features(email, FeatureContext(config=config, rules=rules))
+    verdict, p_delete = combiner.decide(features)
+    if verdict is not None:
+        return EmailDecision(
+            email=email,
+            decision=verdict,
+            reason=FilterReason.COMBINER,
+            confidence=p_delete if verdict == Decision.DELETE else 1 - p_delete,
+        )
+    return await ai(email, describe_features(features))
 
 
 async def process_email_node(state: StreamingState) -> StreamingState:
@@ -384,7 +429,9 @@ async def process_email_node(state: StreamingState) -> StreamingState:
     logger.info("Processing email %s: %s", uid, email.subject)
 
     try:
-        decision_obj = await classify_email(email, state["config"], state["rules"], ai)
+        decision_obj = await classify_email(
+            email, state["config"], state["rules"], ai, state.get("combiner")
+        )
     except Exception as e:
         logger.exception("Error processing email %s", uid)
         # Safe default: keep the email on error
@@ -430,6 +477,13 @@ async def run_streaming_pipeline(config: Config):
 
     # Load rules up front so a bad file fails before touching the mailbox
     rules = RuleSet.load(config.rules_path) if config.rules_path else None
+    combiner = Combiner.load(config.combiner_path) if config.combiner_path else None
+    if combiner:
+        logger.info(
+            "Loaded combiner trained on %s emails from %s",
+            combiner.trained_on,
+            config.combiner_path,
+        )
     if rules:
         logger.info("Loaded %s rules from %s", len(rules.rules), config.rules_path)
 
@@ -462,7 +516,12 @@ async def run_streaming_pipeline(config: Config):
         async def handle(initial_state: StreamingState) -> None:
             try:
                 result = await graph.ainvoke(
-                    {**initial_state, "rules": rules, "ai": batcher.classify}
+                    {
+                        **initial_state,
+                        "rules": rules,
+                        "ai": batcher.classify,
+                        "combiner": combiner,
+                    }
                 )
 
                 op = result.get("operation")
@@ -565,3 +624,26 @@ async def run_learning_pipeline(
     return learner.build(
         min_support=min_support, min_agreement=min_agreement, account=config.email
     )
+
+
+async def sample_inbox(
+    config: Config, count: int, *, seed: int = 0, exclude: set[str] | None = None
+) -> list[Email]:
+    """Fetch a random sample of INBOX emails, read-only (messages stay unread)."""
+    rng = random.Random(seed)
+    async with IMAPSession(config.email) as session:
+        uids = await session.run(lambda client: client.search_uids(criteria="ALL"))
+        pool = [u for u in uids if u not in (exclude or set())]
+        picked = sorted(rng.sample(pool, min(count, len(pool))), key=int)
+        emails: list[Email] = []
+        for i in range(0, len(picked), MAX_MESSAGES_PER_FETCH):
+            batch = picked[i : i + MAX_MESSAGES_PER_FETCH]
+
+            async def fetch(
+                client: AsyncIMAPClient, uids: list[str] = batch
+            ) -> dict[str, Email]:
+                return await client.fetch_messages(uids)
+
+            messages = await session.run(fetch)
+            emails.extend(messages[u] for u in batch if u in messages)
+    return emails

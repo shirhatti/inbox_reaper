@@ -2,13 +2,98 @@
 
 import html
 import re
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from urllib.parse import parse_qs, urlparse
 
 # Data URLs for inline images: data:image/[type];base64,[base64data]
 _BASE64_IMAGE_RE = re.compile(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+")
 _TAG_RE = re.compile(r"<[^>]+>")
 _HSPACE_RE = re.compile(r"[ \t]+")
 _BLANK_LINES_RE = re.compile(r"\n\s*\n\s*\n+")
+_URL_RE = re.compile(r"https?://[^\s<>\"'\])]+")
+# Zero-width and spacer characters marketing emails use as preheader padding
+_INVISIBLE_RE = re.compile(
+    "[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u2060-\u2064\ufeff]"
+)
+_SAFELINKS_HOST = "safelinks.protection.outlook.com"
+# Upper bound on links kept per email (feature extraction only needs a sample)
+MAX_LINKS = 100
+
+
+def real_url(url: str) -> str:
+    """Undo Outlook Safe Links wrapping to recover the destination URL."""
+    parsed = urlparse(url)
+    if parsed.netloc.endswith(_SAFELINKS_HOST):
+        inner = parse_qs(parsed.query).get("url")
+        if inner and inner[0]:
+            return inner[0]
+    return url
+
+
+def url_domain(url: str) -> str:
+    """Host of a URL, lowercased and without a leading "www."."""
+    host = urlparse(real_url(url)).netloc.lower().rsplit("@", 1)[-1].split(":")[0]
+    return host.removeprefix("www.")
+
+
+def compact_urls(text: str) -> str:
+    """Replace each URL with ``[link: domain]``.
+
+    Tracking and Safe Links URLs are hundreds of characters of noise to a
+    model; the destination domain carries the signal.
+    """
+    return _URL_RE.sub(lambda m: f"[link: {url_domain(m.group(0)) or 'url'}]", text)
+
+
+def find_urls(text: str) -> list[str]:
+    """Destination URLs mentioned in plain text (Safe Links unwrapped)."""
+    return [real_url(u) for u in _URL_RE.findall(text)][:MAX_LINKS]
+
+
+@dataclass
+class HTMLStructure:
+    """Structural facts about an HTML body, for feature extraction."""
+
+    links: list[str] = field(default_factory=list)
+    images: int = 0
+    tracking_pixels: int = 0
+
+
+class _StructureParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.result = HTMLStructure()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        a = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "a":
+            href = a.get("href", "")
+            if (
+                href.startswith(("http://", "https://"))
+                and len(self.result.links) < MAX_LINKS
+            ):
+                self.result.links.append(real_url(href))
+        elif tag == "img":
+            self.result.images += 1
+            style = a.get("style", "").replace(" ", "").lower()
+            tiny = all(
+                a.get(dim, "").strip().rstrip("px") in {"0", "1", "2"}
+                for dim in ("width", "height")
+            )
+            if tiny or "display:none" in style:
+                self.result.tracking_pixels += 1
+
+
+def html_structure(markup: str) -> HTMLStructure:
+    """Links, image count and tracking pixels in an HTML document."""
+    parser = _StructureParser()
+    try:
+        parser.feed(markup)
+        parser.close()
+    except Exception:  # malformed HTML: keep whatever was collected
+        pass
+    return parser.result
 
 
 class HTMLTextExtractor(HTMLParser):
@@ -69,7 +154,7 @@ def strip_html(text: str) -> str:
         Plain text with HTML removed and whitespace normalized
     """
     # Remove base64 encoded images first (they bloat the text)
-    text = remove_base64_images(text)
+    text = _INVISIBLE_RE.sub("", remove_base64_images(text))
 
     # If text doesn't contain HTML tags, return as-is
     if "<" not in text:
@@ -115,8 +200,8 @@ def truncate_symmetric(text: str, max_length: int = 2000) -> str:
     Returns:
         Truncated plain text with start and end preserved
     """
-    # Strip HTML first to get clean text
-    clean_text = strip_html(text)
+    # Strip HTML and shorten URLs to their domain before measuring length
+    clean_text = compact_urls(strip_html(text))
 
     if len(clean_text) <= max_length:
         return clean_text

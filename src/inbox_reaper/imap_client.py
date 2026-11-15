@@ -8,7 +8,9 @@ This module provides native async IMAP operations with:
 """
 
 import asyncio
+import contextlib
 import email
+import email.message
 import logging
 import re
 from datetime import datetime
@@ -19,7 +21,7 @@ from typing import Any, Self
 import aioimaplib
 
 from .state import Email
-from .text_utils import truncate_symmetric
+from .text_utils import MAX_LINKS, find_urls, html_structure, truncate_symmetric
 from .timeutil import to_utc, utcnow
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,51 @@ _FETCH_UID_RE = re.compile(r"\bUID (\d+)")
 # Plain-text body length kept per email. Symmetric truncation keeps both the
 # opening and the footer (where unsubscribe links live).
 MAX_BODY_CHARS = 4000
+
+# Headers kept on Email for feature extraction (lowercase). Everything else
+# (routing, antispam internals) is dropped.
+KEPT_HEADERS = frozenset(
+    {
+        "list-id",
+        "list-unsubscribe",
+        "list-unsubscribe-post",
+        "precedence",
+        "auto-submitted",
+        "feedback-id",
+        "in-reply-to",
+        "references",
+        "reply-to",
+        "to",
+        "cc",
+        "return-path",
+        "authentication-results",
+        "dkim-signature",
+        "x-mailer",
+        "x-github-reason",
+        "x-microsoft-antispam",
+        "x-ms-exchange-organization-scl",
+        # Bulk-mail platform fingerprints
+        "x-sg-eid",
+        "x-mailgun-tag",
+        "x-mailgun-sid",
+        "x-mc-user",
+        "x-campaign",
+        "x-campaignid",
+        "x-sfmc-stack",
+        "x-ses-outgoing",
+        "x-mandrill-user",
+        "x-msys-api",
+        "x-cm-message-id",
+        "x-marketo-message-id",
+        "x-mailjet-campaign",
+        "x-rpcampaign",
+        "x-emarsys-identify",
+        "x-ibm-mkt",
+        "x-job",
+    }
+)
+# Per-header cap so a huge References/DKIM header can't bloat the Email
+MAX_HEADER_CHARS = 2000
 
 
 def parse_fetch_literals(lines: list[Any]) -> dict[str, bytes]:
@@ -354,15 +401,41 @@ class AsyncIMAPClient:
 
     def _parse_message(self, uid: str, raw_email: bytes) -> Email:
         msg = email.message_from_bytes(raw_email)
+        body = self._extract_body(msg)
+        structure = html_structure(self._find_part(msg, "text/html"))
+        links = structure.links or find_urls(self._find_part(msg, "text/plain"))
         return Email(
             uid=uid,
             subject=self._decode_header(msg.get("Subject", "")),
             sender=self._decode_header(msg.get("From", "")),
-            body=self._extract_body(msg),
+            body=body,
             date=_parse_date(msg.get("Date", "")),
             attachments=self._extract_attachments(msg),
             has_list_unsubscribe="List-Unsubscribe" in msg,
+            headers=self._kept_headers(msg),
+            links=links[:MAX_LINKS],
+            image_count=structure.images,
+            tracking_pixels=structure.tracking_pixels,
         )
+
+    def _kept_headers(self, msg: email.message.Message) -> dict[str, str]:
+        kept: dict[str, list[str]] = {}
+        for name, value in msg.items():
+            key = name.lower()
+            if key in KEPT_HEADERS:
+                kept.setdefault(key, []).append(self._decode_header(str(value)))
+        return {k: "\n".join(v)[:MAX_HEADER_CHARS] for k, v in kept.items()}
+
+    def _find_part(self, msg: email.message.Message, content_type: str) -> str:
+        """Decoded text of the first non-attachment part of ``content_type``."""
+        for part in msg.walk():
+            if (
+                part.get_content_type() == content_type
+                and part.get_content_disposition() != "attachment"
+            ):
+                with contextlib.suppress(Exception):
+                    return self._decode_part(part)
+        return ""
 
     def _parse_header_fields(self, raw_header: bytes) -> dict[str, Any]:
         msg = email.message_from_bytes(raw_header)

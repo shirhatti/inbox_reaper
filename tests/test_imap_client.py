@@ -78,6 +78,38 @@ class TestMessageParsing:
         assert msg.body.strip() == "Plain body"
         assert msg.has_list_unsubscribe is True
 
+    def test_keeps_feature_headers_links_and_pixels(self):
+        msg = EmailMessage()
+        msg["From"] = "Shop <news@e.shop.example>"
+        msg["Subject"] = "Sale"
+        msg["Date"] = "Mon, 06 Jan 2025 10:00:00 +0000"
+        msg["List-Id"] = "<news.shop.example>"
+        msg["Precedence"] = "bulk"
+        msg["X-Github-Reason"] = "mention"
+        msg["Received"] = "from relay.example (dropped: routing header)"
+        msg.set_content("See https://shop.example/plain")
+        msg.add_alternative(
+            '<p>Sale <a href="https://click.e.shop.example/t?u=1">shop</a></p>'
+            '<img src="logo.png"><img src="p.gif" width="1" height="1">',
+            subtype="html",
+        )
+        email = make_client()._parse_message("9", msg.as_bytes())
+        assert email.headers == {
+            "list-id": "<news.shop.example>",
+            "precedence": "bulk",
+            "x-github-reason": "mention",
+        }
+        # HTML links win over plain-text URLs
+        assert email.links == ["https://click.e.shop.example/t?u=1"]
+        assert (email.image_count, email.tracking_pixels) == (2, 1)
+
+    def test_plain_text_links_when_no_html(self):
+        email = make_client()._parse_message(
+            "9", raw_message(Body="Track it at https://carrier.example/t/123 today")
+        )
+        assert email.links == ["https://carrier.example/t/123"]
+        assert "[link: carrier.example]" in email.body
+
     def test_list_unsubscribe_absent(self):
         msg = make_client()._parse_message("5", raw_message())
         assert msg.has_list_unsubscribe is False

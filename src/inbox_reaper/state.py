@@ -28,6 +28,13 @@ class FilterReason(StrEnum):
     WHITELIST = "whitelist"
     SENDER_PATTERN = "sender_pattern"
     RULE = "rule"  # learned/manual sender or domain rule
+    EXPIRED = (
+        "expired"  # time-sensitive mail (codes, sign-in links) past its useful life
+    )
+    TIME_SENSITIVE = (
+        "time_sensitive"  # time-sensitive mail still within its useful life
+    )
+    COMBINER = "combiner"  # trained combiner over the feature vector
     AI_CLASSIFIED = "ai_classified"
     NONE = "none"
 
@@ -45,6 +52,12 @@ class Email(BaseModel):
     attachments: list[str] = Field(default_factory=list)
     # True when the message carries a List-Unsubscribe header (bulk mail)
     has_list_unsubscribe: bool = False
+    # Selected headers (lowercased name -> value; repeats joined by newlines)
+    headers: dict[str, str] = Field(default_factory=dict)
+    # Link destinations from the HTML and text bodies (Safe Links unwrapped)
+    links: list[str] = Field(default_factory=list)
+    image_count: int = 0
+    tracking_pixels: int = 0
 
 
 class EmailDecision(BaseModel):
@@ -109,6 +122,8 @@ class Config(BaseModel):
 
     # Learned rules file (from `inbox-reaper learn`), applied before AI
     rules_path: str | None = None
+    # Trained combiner (from `inbox-reaper train`): decides from the feature vector
+    combiner_path: str | None = None
 
     # Safety
     dry_run: bool = True

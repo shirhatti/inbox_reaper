@@ -9,6 +9,7 @@ from inbox_reaper.imap_client import IMAPConnectionError
 from inbox_reaper.langgraph_streaming import (
     AIBatcher,
     IMAPSession,
+    classify_email,
     for_each_concurrently,
     prefetch,
     run_streaming_pipeline,
@@ -75,7 +76,9 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
         # Never load a real model in tests; AI says "keep" unless a test overrides
         patcher = patch(
             "inbox_reaper.langgraph_streaming.classify_batch_with_ai",
-            side_effect=lambda emails, config: [ai_keep(email) for email in emails],
+            side_effect=lambda emails, config, signals=None: [
+                ai_keep(email) for email in emails
+            ],
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -244,7 +247,7 @@ class TestAIBatcher(unittest.IsolatedAsyncioTestCase):
         release = threading.Event()
         seen: list[list[str]] = []
 
-        def fake_batch(emails, config):
+        def fake_batch(emails, config, signals=None):
             seen.append([e.uid for e in emails])
             if len(seen) == 1:
                 started.set()
@@ -318,7 +321,7 @@ class TestConcurrentPipeline(unittest.IsolatedAsyncioTestCase):
         mock_create_client.return_value = make_mock_client(messages)
         batches: list[int] = []
 
-        def fake_batch(emails, config):
+        def fake_batch(emails, config, signals=None):
             batches.append(len(emails))
             time.sleep(0.05)  # model is slow; more AI requests queue meanwhile
             return [
@@ -344,3 +347,59 @@ class TestConcurrentPipeline(unittest.IsolatedAsyncioTestCase):
         assert max(batches) <= 4  # never above the limit
         deleted = mock_create_client.return_value.delete_emails.await_args.args[0]
         assert sorted(deleted, key=int) == ["1", "3", "5", "7", "9", "11"]
+
+
+class TestCombinerRouting(unittest.IsolatedAsyncioTestCase):
+    def combiner(self, p_delete: float):
+        combiner = MagicMock()
+        combiner.decide.return_value = (
+            Decision.DELETE
+            if p_delete >= 0.9
+            else Decision.KEEP
+            if p_delete <= 0.1
+            else None,
+            p_delete,
+        )
+        return combiner
+
+    async def test_confident_combiner_decides_without_ai(self):
+        ai = AsyncMock()
+        email = make_email("5", "Weekly deals", "news@e.shop.example", "Hi")
+        decision = await classify_email(
+            email, make_config(), None, ai, self.combiner(0.97)
+        )
+        assert decision.decision == Decision.DELETE
+        assert decision.reason == FilterReason.COMBINER
+        assert decision.confidence == 0.97
+        ai.assert_not_awaited()
+
+    async def test_contested_goes_to_ai_with_signals(self):
+        email = make_email("5", "Hello", "news@e.shop.example", "Hi")
+        email = email.model_copy(update={"headers": {"precedence": "bulk"}})
+        ai = AsyncMock(return_value=ai_keep(email))
+        decision = await classify_email(
+            email, make_config(), None, ai, self.combiner(0.5)
+        )
+        assert decision.reason == FilterReason.AI_CLASSIFIED
+        (_, signals), _ = ai.await_args
+        assert "bulk mail" in signals
+
+    async def test_hard_keeps_and_expiry_run_before_the_combiner(self):
+        combiner = self.combiner(0.99)
+        ai = AsyncMock()
+        keyword = make_email("6", "Important update", "boss@corp.example")
+        assert (
+            await classify_email(keyword, make_config(), None, ai, combiner)
+        ).decision == (Decision.KEEP)
+        code = make_email(
+            "7", "Your verification code is 123456", "no-reply@acct.example"
+        )
+        expired = await classify_email(code, make_config(), None, ai, combiner)
+        assert expired.reason == FilterReason.EXPIRED
+        combiner.decide.assert_not_called()
+
+    async def test_without_combiner_heuristics_still_decide(self):
+        ai = AsyncMock()
+        decision = await classify_email(MESSAGES["1"], make_config(), None, ai)
+        assert decision.decision == Decision.DELETE
+        ai.assert_not_awaited()

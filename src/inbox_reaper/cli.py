@@ -47,7 +47,9 @@ def cli():
     """
 
 
-def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
+def build_config(
+    config_path: str | None, cli_args: dict[str, Any], *, require_email: bool = True
+) -> Config:
     """Load the optional config file, overlay CLI args, and validate."""
     file_config = {}
     if config_path:
@@ -62,7 +64,7 @@ def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
     merged_config = merge_config_with_cli_args(file_config, cli_args)
 
     # Validate required fields
-    if not merged_config.get("email"):
+    if require_email and not merged_config.get("email"):
         click.echo("Error: --email is required (or must be in config file)", err=True)
         raise click.Abort
 
@@ -126,6 +128,13 @@ def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
     type=click.Path(exists=True, dir_okay=False),
     help="Rules file from 'inbox-reaper learn', applied before heuristics and AI",
 )
+@click.option(
+    "--combiner",
+    "combiner_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Combiner from 'inbox-reaper train': decides from the feature vector, "
+    "sending only contested emails to the AI",
+)
 def process(
     config: str | None,
     model: str | None,
@@ -137,6 +146,7 @@ def process(
     keywords: tuple,
     whitelist_domain: tuple,
     rules_path: str | None,
+    combiner_path: str | None,
 ):
     """Process emails through the classification pipeline with LangGraph.
 
@@ -163,6 +173,7 @@ def process(
         "keywords": list(keywords) if keywords else None,
         "whitelist_domains": list(whitelist_domain) if whitelist_domain else None,
         "rules_path": rules_path,
+        "combiner_path": combiner_path,
     }
     config_obj = build_config(config, cli_args)
 
@@ -174,6 +185,7 @@ def process(
     click.echo(f"  Keywords: {config_obj.keywords or 'None'}")
     click.echo(f"  Whitelisted domains: {config_obj.whitelist_domains or 'None'}")
     click.echo(f"  Rules: {config_obj.rules_path or 'None'}")
+    click.echo(f"  Combiner: {config_obj.combiner_path or 'None'}")
 
     # Run the LangGraph pipeline
     try:
@@ -716,3 +728,146 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+@cli.command()
+@click.option("--config", type=click.Path(exists=True), help="Configuration file")
+@click.option("--email", help="Email address to sample from")
+@click.option("-n", "count", default=200, show_default=True, help="Emails to sample")
+@click.option("--seed", default=0, show_default=True, help="Random seed")
+@click.option(
+    "--exclude",
+    "exclude_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Existing samples file whose emails should not be sampled again",
+)
+@click.option("-o", "--output", default="samples.jsonl", show_default=True)
+def sample(config, email, count, seed, exclude_path, output):
+    """Save a random sample of emails for labelling (read-only).
+
+    The samples file holds email contents; keep it private.
+
+    \b
+    Example:
+        inbox-reaper sample --email user@example.com -n 300 -o samples.jsonl
+    """
+    from .labeling import Sample, append_jsonl, load_samples  # noqa: PLC0415
+    from .langgraph_streaming import sample_inbox  # noqa: PLC0415
+
+    config_obj = build_config(config, {"email": email})
+    exclude = {s.uid for s in load_samples(exclude_path)} if exclude_path else set()
+    emails = asyncio.run(sample_inbox(config_obj, count, seed=seed, exclude=exclude))
+    sampled_at = utcnow()
+    for e in emails:
+        append_jsonl(output, Sample(uid=e.uid, sampled_at=sampled_at, email=e))
+    click.echo(f"Sampled {len(emails)} emails -> {output}")
+    click.echo(f"Next: inbox-reaper label {output}")
+
+
+@cli.command()
+@click.argument("samples_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("-o", "--output", default="labels.jsonl", show_default=True)
+@click.option("--labeler", default="human", show_default=True)
+@click.option(
+    "--prioritize",
+    "reference_paths",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Labels files (e.g. model labels) whose disagreements you label first",
+)
+@click.option("--limit", type=int, help="Stop after this many emails")
+def label(samples_path, output, labeler, reference_paths, limit):
+    """Label sampled emails along several dimensions, interactively.
+
+    For each email: keep or delete, how long it stays useful, a category, and
+    how bad it would be to lose it. Progress is saved after every email; run
+    again to resume. Other labellers' answers are never shown.
+
+    \b
+    Example:
+        inbox-reaper label samples.jsonl --prioritize model-labels.jsonl
+    """
+    from .labeling import label_interactively, load_labels, load_samples, review_order  # noqa: PLC0415
+
+    samples = load_samples(samples_path)
+    references = [load_labels(p) for p in reference_paths]
+    ordered = review_order(samples, references) if references else samples
+    count = label_interactively(ordered, output, labeler, limit)
+    click.echo(f"Labelled {count} emails -> {output}")
+
+
+@cli.command("compare-labels")
+@click.argument(
+    "label_paths", nargs=-1, required=True, type=click.Path(exists=True, dir_okay=False)
+)
+@click.option(
+    "--samples",
+    "samples_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Samples file, to show subjects of disagreements",
+)
+@click.option("--show", default=20, show_default=True, help="Disagreements to list")
+def compare_labels(label_paths, samples_path, show):
+    """Compare labellers: agreement per dimension and keep/delete disagreements."""
+    from .labeling import compare, disagreements, load_labels, load_samples  # noqa: PLC0415
+
+    sets = {Path(p).stem: load_labels(p) for p in label_paths}
+    for line in compare(sets):
+        click.echo(line)
+    samples = {s.uid: s for s in load_samples(samples_path)} if samples_path else {}
+    rows = list(disagreements(sets, samples))
+    click.echo(f"\n{len(rows)} keep/delete disagreements")
+    for row in rows[:show]:
+        click.echo(row)
+
+
+@cli.command("train")
+@click.argument("samples_path", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--labels",
+    "label_paths",
+    multiple=True,
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Labels files; when several label the same email, the first wins",
+)
+@click.option("--config", type=click.Path(exists=True), help="Configuration file")
+@click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("-o", "--output", default="combiner.json", show_default=True)
+def train_command(samples_path, label_paths, config, rules_path, output):
+    """Train the combiner from labelled samples.
+
+    Keep-labelled emails are weighted by how bad losing them would be. The
+    reported metrics are cross-validated. Use the result with
+    'inbox-reaper process --combiner'.
+    """
+    from .labeling import load_labels, load_samples, train_combiner  # noqa: PLC0415
+    from .rules import RuleSet  # noqa: PLC0415
+
+    # Only filter settings (keywords, whitelist) matter here, not the account
+    config_obj = build_config(config, {}, require_email=False)
+    rules = RuleSet.load(rules_path) if rules_path else None
+    combiner = train_combiner(
+        load_samples(samples_path),
+        [load_labels(p) for p in label_paths],
+        config_obj,
+        rules,
+    )
+    combiner.save(output)
+    m = combiner.metrics
+    click.echo(
+        f"Trained on {combiner.trained_on} emails ({m['keep_examples']:.0f} keep, "
+        f"{m['delete_examples']:.0f} delete) -> {output}"
+    )
+    click.echo(
+        f"Cross-validated: {m['false_deletes']:.0f} keep-labelled emails would be "
+        f"deleted, {m['deletes_caught']:.0f}/{m['delete_examples']:.0f} deletable "
+        f"caught, {m['contested_share']:.0%} contested (sent to the AI)"
+    )
+    click.echo(
+        f"Thresholds: delete if P >= {combiner.delete_threshold:.2f}, "
+        f"keep if P <= {combiner.keep_threshold:.2f}"
+    )
+    click.echo("Strongest features:")
+    for name, weight in combiner.top_weights(8):
+        click.echo(f"  {weight:+.2f}  {name}")

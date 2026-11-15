@@ -16,6 +16,7 @@ dependencies = [
     "langgraph>=1.2.16",
     "langgraph-checkpoint-sqlite>=3.1.2",
     "mlx-lm>=0.32.2",
+    "numpy>=2.5.4",
     "pydantic>=2.14.1",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
