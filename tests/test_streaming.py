@@ -1,10 +1,15 @@
+import asyncio
+import threading
+import time
 import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from inbox_reaper.imap_client import IMAPConnectionError
 from inbox_reaper.langgraph_streaming import (
+    AIBatcher,
     IMAPSession,
+    for_each_concurrently,
     prefetch,
     run_streaming_pipeline,
 )
@@ -18,6 +23,15 @@ def make_email(uid: str, subject: str, sender: str, body: str = "") -> Email:
         sender=sender,
         body=body,
         date=datetime(2025, 1, 1),
+    )
+
+
+def ai_keep(email: Email) -> EmailDecision:
+    return EmailDecision(
+        email=email,
+        decision=Decision.KEEP,
+        reason=FilterReason.AI_CLASSIFIED,
+        confidence=0.0,
     )
 
 
@@ -60,13 +74,8 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # Never load a real model in tests; AI says "keep" unless a test overrides
         patcher = patch(
-            "inbox_reaper.langgraph_streaming.classify_with_ai",
-            side_effect=lambda email, config: EmailDecision(
-                email=email,
-                decision=Decision.KEEP,
-                reason=FilterReason.AI_CLASSIFIED,
-                confidence=0.0,
-            ),
+            "inbox_reaper.langgraph_streaming.classify_batch_with_ai",
+            side_effect=lambda emails, config: [ai_keep(email) for email in emails],
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -99,17 +108,19 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
         mock_client.delete_emails.assert_awaited_once_with(["1"])
         mock_create_client.assert_called_once()
 
-    @patch("inbox_reaper.langgraph_streaming.classify_with_ai")
+    @patch("inbox_reaper.langgraph_streaming.classify_batch_with_ai")
     @patch("inbox_reaper.langgraph_streaming.create_imap_client")
     async def test_unmatched_emails_go_to_ai(self, mock_create_client, mock_ai):
         email = make_email("7", "Hello", "Robot <bot@service.example>", "Hi there")
         mock_create_client.return_value = make_mock_client({"7": email})
-        mock_ai.return_value = EmailDecision(
-            email=email,
-            decision=Decision.DELETE,
-            reason=FilterReason.AI_CLASSIFIED,
-            confidence=0.9,
-        )
+        mock_ai.return_value = [
+            EmailDecision(
+                email=email,
+                decision=Decision.DELETE,
+                reason=FilterReason.AI_CLASSIFIED,
+                confidence=0.9,
+            )
+        ]
 
         await run_streaming_pipeline(make_config(dry_run=False))
 
@@ -225,3 +236,111 @@ class TestPrefetch(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAIBatcher(unittest.IsolatedAsyncioTestCase):
+    async def test_requests_waiting_during_a_batch_form_the_next_batch(self):
+        started = threading.Event()
+        release = threading.Event()
+        seen: list[list[str]] = []
+
+        def fake_batch(emails, config):
+            seen.append([e.uid for e in emails])
+            if len(seen) == 1:
+                started.set()
+                release.wait(timeout=5)  # hold the first batch while others queue
+            return [ai_keep(e) for e in emails]
+
+        emails = [make_email(str(i), "s", "a@b.example") for i in range(7)]
+        with patch(
+            "inbox_reaper.langgraph_streaming.classify_batch_with_ai",
+            side_effect=fake_batch,
+        ):
+            async with AIBatcher(make_config(), max_batch=4) as batcher:
+                first = asyncio.create_task(batcher.classify(emails[0]))
+                await asyncio.to_thread(started.wait, 5)
+                rest = [asyncio.create_task(batcher.classify(e)) for e in emails[1:]]
+                await asyncio.sleep(0.05)
+                release.set()
+                results = await asyncio.gather(first, *rest)
+
+        assert seen == [["0"], ["1", "2", "3", "4"], ["5", "6"]]
+        assert [r.email.uid for r in results] == [e.uid for e in emails]
+
+    async def test_batch_failure_reaches_every_caller(self):
+        emails = [make_email(str(i), "s", "a@b.example") for i in range(2)]
+        with patch(
+            "inbox_reaper.langgraph_streaming.classify_batch_with_ai",
+            side_effect=RuntimeError("boom"),
+        ):
+            async with AIBatcher(make_config(), max_batch=4) as batcher:
+                results = await asyncio.gather(
+                    *(batcher.classify(e) for e in emails), return_exceptions=True
+                )
+        assert all(isinstance(r, RuntimeError) for r in results)
+
+
+class TestForEachConcurrently(unittest.IsolatedAsyncioTestCase):
+    async def test_respects_limit_and_handles_every_item(self):
+        running = peak = 0
+        done: list[int] = []
+
+        async def source():
+            for i in range(10):
+                yield i
+
+        async def handler(i):
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+            done.append(i)
+
+        await for_each_concurrently(source(), handler, limit=3)
+        assert peak == 3
+        assert sorted(done) == list(range(10))
+
+
+class TestConcurrentPipeline(unittest.IsolatedAsyncioTestCase):
+    @patch("inbox_reaper.langgraph_streaming.create_imap_client")
+    async def test_ai_emails_are_batched_and_deterministic_ones_dont_wait(
+        self, mock_create_client
+    ):
+        # 6 emails for the AI interleaved with 6 keyword keeps
+        messages = {}
+        for i in range(12):
+            uid = str(i + 1)
+            if i % 2:
+                messages[uid] = make_email(uid, "Important", "boss@corp.example")
+            else:
+                messages[uid] = make_email(uid, "Hello", "bot@svc.example", "Hi")
+        mock_create_client.return_value = make_mock_client(messages)
+        batches: list[int] = []
+
+        def fake_batch(emails, config):
+            batches.append(len(emails))
+            time.sleep(0.05)  # model is slow; more AI requests queue meanwhile
+            return [
+                EmailDecision(
+                    email=e,
+                    decision=Decision.DELETE,
+                    reason=FilterReason.AI_CLASSIFIED,
+                    confidence=0.9,
+                )
+                for e in emails
+            ]
+
+        with patch(
+            "inbox_reaper.langgraph_streaming.classify_batch_with_ai",
+            side_effect=fake_batch,
+        ):
+            await run_streaming_pipeline(
+                make_config(dry_run=False, concurrent_ai_limit=4, batch_size=100)
+            )
+
+        assert sum(batches) == 6
+        assert max(batches) > 1  # requests were grouped
+        assert max(batches) <= 4  # never above the limit
+        deleted = mock_create_client.return_value.delete_emails.await_args.args[0]
+        assert sorted(deleted, key=int) == ["1", "3", "5", "7", "9", "11"]

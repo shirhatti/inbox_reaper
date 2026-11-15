@@ -198,7 +198,9 @@ class TestLearningPipeline:
         client.fetch_messages.return_value = {"1": make_email("x@corp.example")}
         mock_create_client.return_value = client
 
-        with patch("inbox_reaper.langgraph_streaming.classify_with_ai") as mock_ai:
+        with patch(
+            "inbox_reaper.langgraph_streaming.classify_batch_with_ai"
+        ) as mock_ai:
             rule_set = asyncio.run(
                 run_learning_pipeline(Config(email="me@example.com"), use_ai=False)
             )
@@ -207,7 +209,7 @@ class TestLearningPipeline:
 
 
 class TestProcessWithRules:
-    @patch("inbox_reaper.langgraph_streaming.classify_with_ai")
+    @patch("inbox_reaper.langgraph_streaming.classify_batch_with_ai")
     @patch("inbox_reaper.langgraph_streaming.create_imap_client")
     def test_rule_drives_delete(self, mock_create_client, mock_ai, tmp_path):
 

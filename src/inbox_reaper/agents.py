@@ -11,7 +11,7 @@ from email.utils import parseaddr
 
 from pydantic import BaseModel, Field
 
-from .mlx_backend import generate_text
+from .mlx_backend import generate_text, generate_text_batch
 from .state import (
     Config,
     Decision,
@@ -45,6 +45,9 @@ class AIClassificationResponse(BaseModel):
 _AI_CLASSIFICATION_SCHEMA = AIClassificationResponse.model_json_schema()
 
 logger = logging.getLogger(__name__)
+
+# Generous buffer for models that add explanatory text around the JSON
+AI_MAX_TOKENS = 200
 
 # Deterministic filter patterns, compiled once rather than on every email
 _ORDER_NUMBER_RE = re.compile(r"(receipt|invoice|order|confirmation)\s*#?\s*\d+")
@@ -303,18 +306,13 @@ def parse_ai_response(response: str) -> AIClassificationResponse:
     return AIClassificationResponse(**json.loads(response_text[json_start:json_end]))
 
 
-def classify_with_ai(email: Email, config: Config) -> EmailDecision:
-    """Classify email using MLX LLM with structured JSON output.
-
-    This is the only non-pure function (has side effect of calling MLX).
-    Returns DELETE decision for marketing, KEEP for everything else.
-    The model returns both classification and confidence score.
-    """
+def ai_messages(email: Email) -> list[dict[str, str]]:
+    """Chat messages asking the model to classify ``email``."""
     # Strip HTML and truncate symmetrically to preserve footer (unsubscribe links, etc.)
     body_preview = truncate_symmetric(email.body)
 
     # Use chat template for better JSON compliance with instruct models
-    messages = [
+    return [
         {
             "role": "system",
             "content": (
@@ -348,26 +346,27 @@ Output format: {{"is_marketing": true, "confidence": 0.95}}""",
         },
     ]
 
+
+def _ai_keep(email: Email) -> EmailDecision:
+    """Safe default when the model fails or its output can't be parsed."""
+    return EmailDecision(
+        email=email,
+        decision=Decision.KEEP,
+        reason=FilterReason.AI_CLASSIFIED,
+        confidence=0.0,
+    )
+
+
+def ai_decision(email: Email, response: str, config: Config) -> EmailDecision:
+    """Turn a model response into a decision; unparseable output keeps."""
     try:
-        # Use MLX for inference with chat template
-        response = generate_text(
-            model_name=config.model_name,
-            messages=messages,
-            max_tokens=200,  # Generous buffer for models that add explanatory text
-        )
         classification = parse_ai_response(response)
     except Exception as e:
         # Malformed model output is expected occasionally; log without traceback
-        # and default to KEEP (safe default)
         logger.error(  # noqa: TRY400
             "MLX classification failed for email %s: %s", email.uid, e
         )
-        return EmailDecision(
-            email=email,
-            decision=Decision.KEEP,
-            reason=FilterReason.AI_CLASSIFIED,
-            confidence=0.0,
-        )
+        return _ai_keep(email)
 
     # Only delete if marked as marketing AND confidence >= threshold
     # Otherwise, keep (safe default for low confidence)
@@ -385,3 +384,47 @@ Output format: {{"is_marketing": true, "confidence": 0.95}}""",
         reason=FilterReason.AI_CLASSIFIED,
         confidence=classification.confidence,
     )
+
+
+def classify_with_ai(email: Email, config: Config) -> EmailDecision:
+    """Classify one email with the MLX model; KEEP on any failure."""
+    try:
+        response = generate_text(
+            model_name=config.model_name,
+            messages=ai_messages(email),
+            max_tokens=AI_MAX_TOKENS,
+        )
+    except Exception as e:
+        logger.error(  # noqa: TRY400
+            "MLX classification failed for email %s: %s", email.uid, e
+        )
+        return _ai_keep(email)
+    return ai_decision(email, response, config)
+
+
+def classify_batch_with_ai(emails: list[Email], config: Config) -> list[EmailDecision]:
+    """Classify several emails in one batched MLX call, in input order.
+
+    Batching amortizes decoding across emails. If the whole call fails every
+    email is kept; a single unparseable response keeps just that email.
+    """
+    if not emails:
+        return []
+    if len(emails) == 1:
+        # Plain generation is ~10% faster than a batch of one
+        return [classify_with_ai(emails[0], config)]
+    try:
+        responses = generate_text_batch(
+            model_name=config.model_name,
+            messages_list=[ai_messages(email) for email in emails],
+            max_tokens=AI_MAX_TOKENS,
+        )
+    except Exception as e:
+        logger.error(  # noqa: TRY400
+            "MLX batch classification failed for %s emails: %s", len(emails), e
+        )
+        return [_ai_keep(email) for email in emails]
+    return [
+        ai_decision(email, response, config)
+        for email, response in zip(emails, responses, strict=True)
+    ]

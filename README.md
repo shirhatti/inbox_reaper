@@ -20,7 +20,8 @@ and messages classified as marketing are deleted in batches.
    batch is prefetched in the background while the current one is classified,
    so network latency overlaps with model inference.
 4. **Classify** - each email goes through a one-node LangGraph graph
-   (`process_email`). Emails are classified one at a time; the first step that
+   (`process_email`). Up to 2 x `--concurrent-limit` emails are in flight at
+   once, so filter decisions never wait behind the model; the first step that
    returns a decision wins:
    1. *Hard keeps* - important attachments, `--keywords`, `--whitelist-domain`
       (always first, never overridden)
@@ -28,7 +29,9 @@ and messages classified as marketing are deleted in batches.
    3. *Heuristics* - transactional patterns (receipts, orders, shipping) keep;
       marketing indicators (List-Unsubscribe, "view in browser", tracking
       subdomains) delete
-   4. *AI* - the MLX model, run in a worker thread so fetching continues
+   4. *AI* - the MLX model. A single worker groups waiting emails into one
+      batched generation call of up to `--concurrent-limit` emails, in a
+      thread so fetching continues; the model is never called concurrently
 
    Any error while classifying an email keeps it.
 5. **Delete** - delete decisions are buffered by `BatchCoordinator` and sent as
@@ -234,8 +237,10 @@ with `--rules rules.json`; senders it covers are then decided without the model.
 
 ### Performance Tuning
 
-Classification is sequential, and AI inference dominates the run time, so the
-biggest win is letting more emails be decided before the model:
+AI inference dominates the run time. Batching (`--concurrent-limit`) makes
+each AI email about 15-25% cheaper on an M-series Mac with the default 3B
+model; batches past ~16 get slower per email, so the default is 8. The
+biggest win is still letting more emails be decided before the model:
 
 - Run `inbox-reaper learn` (or `learn --no-ai` for a quick pass) and pass
   `--rules rules.json`; senders covered by a rule skip the model entirely.
@@ -260,7 +265,7 @@ inbox-reaper process --batch-size 200
 **Processing Options:**
 - `--model TEXT` - MLX model name from Hugging Face (default: mlx-community/Llama-3.2-3B-Instruct-4bit)
 - `--batch-size INT` - Emails per batch (default: 50)
-- `--concurrent-limit INT` - Accepted but currently not applied; emails are classified one at a time
+- `--concurrent-limit INT` - Emails per batched AI call (default: 8)
 - `--dry-run/--no-dry-run` - Enable dry-run mode (default: True)
 - `--email TEXT` - Email address to process (required unless in config file)
 - `--max-emails INT` - Stop after this many emails (for testing)
@@ -324,7 +329,7 @@ and are kept for background; the pipeline above is what `process` runs today:
 - [x] Pipelined I/O (fetch while classifying)
 - [x] Batched email deletion
 - [x] Read-only rule learning (`learn`) and rule application (`process --rules`)
-- [ ] Apply `--concurrent-limit` (classify several emails at once)
+- [x] Batched AI classification (`--concurrent-limit`)
 - [ ] Resume an interrupted run without re-classifying kept emails
 
 ## Development

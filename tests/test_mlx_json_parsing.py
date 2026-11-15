@@ -8,7 +8,11 @@ import unittest
 from datetime import datetime
 from unittest.mock import patch
 
-from inbox_reaper.agents import classify_with_ai, parse_ai_response
+from inbox_reaper.agents import (
+    classify_batch_with_ai,
+    classify_with_ai,
+    parse_ai_response,
+)
 from inbox_reaper.state import Config, Decision, Email, FilterReason
 
 
@@ -339,13 +343,65 @@ This email appears to be promotional."""
         self.assertEqual(result.confidence, 0.5)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 def test_parse_ai_response_single_line_fence():
     """A fence without a newline must not discard the JSON."""
 
     parsed = parse_ai_response('```{"is_marketing": true, "confidence": 0.8}```')
     assert parsed.is_marketing is True
     assert parsed.confidence == 0.8
+
+
+class TestBatchClassification:
+    config = Config(email="user@example.com", ai_confidence_threshold=0.7)
+
+    @staticmethod
+    def emails(n: int) -> list[Email]:
+        return [
+            Email(
+                uid=str(i),
+                subject="s",
+                sender="a@b.example",
+                body="",
+                date=datetime(2025, 1, 1),
+            )
+            for i in range(n)
+        ]
+
+    @patch("inbox_reaper.agents.generate_text_batch")
+    def test_decisions_follow_input_order(self, mock_batch):
+        mock_batch.return_value = [
+            '{"is_marketing": true, "confidence": 0.9}',
+            '{"is_marketing": false, "confidence": 0.9}',
+        ]
+        results = classify_batch_with_ai(self.emails(2), self.config)
+        assert [r.email.uid for r in results] == ["0", "1"]
+        assert [r.decision for r in results] == [Decision.DELETE, Decision.KEEP]
+        assert len(mock_batch.call_args.kwargs["messages_list"]) == 2
+
+    @patch("inbox_reaper.agents.generate_text_batch")
+    def test_unparseable_response_keeps_only_that_email(self, mock_batch):
+        mock_batch.return_value = [
+            "no json",
+            '{"is_marketing": true, "confidence": 0.9}',
+        ]
+        results = classify_batch_with_ai(self.emails(2), self.config)
+        assert [r.decision for r in results] == [Decision.KEEP, Decision.DELETE]
+        assert results[0].confidence == 0.0
+
+    @patch("inbox_reaper.agents.generate_text_batch", side_effect=RuntimeError("oom"))
+    def test_generation_failure_keeps_everything(self, _mock_batch):
+        results = classify_batch_with_ai(self.emails(3), self.config)
+        assert [r.decision for r in results] == [Decision.KEEP] * 3
+
+    @patch("inbox_reaper.agents.generate_text_batch")
+    def test_empty_batch_skips_the_model(self, mock_batch):
+        assert classify_batch_with_ai([], self.config) == []
+        mock_batch.assert_not_called()
+
+    @patch("inbox_reaper.agents.generate_text_batch")
+    @patch("inbox_reaper.agents.generate_text")
+    def test_single_email_uses_plain_generation(self, mock_single, mock_batch):
+        mock_single.return_value = '{"is_marketing": true, "confidence": 0.9}'
+        [result] = classify_batch_with_ai(self.emails(1), self.config)
+        assert result.decision == Decision.DELETE
+        mock_batch.assert_not_called()

@@ -80,7 +80,8 @@ class Config(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     # AI settings (MLX)
-    concurrent_ai_limit: int = 25
+    # Emails per batched MLX call; past ~16 a batch gets slower per email
+    concurrent_ai_limit: int = 8
     model_name: str = "mlx-community/Llama-3.2-3B-Instruct-4bit"
 
     # Email settings

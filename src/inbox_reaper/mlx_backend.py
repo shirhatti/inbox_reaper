@@ -125,6 +125,37 @@ def generate_text(
     return response
 
 
+def _encode_prompt(tokenizer: Any, messages: list[dict[str, str]]) -> list[int]:
+    """Apply the chat template and tokenize, without doubling the BOS token."""
+    prompt = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    # Same rule as mlx_lm.generate: only add special tokens if the template
+    # didn't already start with BOS
+    bos = tokenizer.bos_token
+    add_special_tokens = bos is None or not prompt.startswith(bos)
+    return list(tokenizer.encode(prompt, add_special_tokens=add_special_tokens))
+
+
+def generate_text_batch(
+    model_name: str,
+    messages_list: list[list[dict[str, str]]],
+    max_tokens: int = 100,
+) -> list[str]:
+    """Generate one completion per chat in a single batched MLX call.
+
+    Returns completions in input order. Not safe to call concurrently with
+    other generation on the same model; callers serialize access.
+    """
+    if not messages_list:
+        return []
+    batch_generate = _mlx_lm().batch_generate
+    model, tokenizer = get_mlx_model(model_name)
+    prompts = [_encode_prompt(tokenizer, messages) for messages in messages_list]
+    response = batch_generate(model, tokenizer, prompts, max_tokens=max_tokens)
+    return [str(text) for text in response.texts]
+
+
 async def generate_text_async(
     model_name: str,
     messages: list[dict[str, str]],

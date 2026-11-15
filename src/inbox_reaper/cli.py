@@ -94,7 +94,7 @@ def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
     "--concurrent-limit",
     default=None,
     type=int,
-    help="Maximum concurrent AI classification requests",
+    help="Emails classified per batched AI call (default: 8)",
 )
 @click.option(
     "--dry-run/--no-dry-run",

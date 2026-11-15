@@ -23,7 +23,7 @@ from .agents import (
     check_marketing_indicators,
     check_transactional_patterns,
     check_whitelist,
-    classify_with_ai,
+    classify_batch_with_ai,
 )
 from .batch_coordinator import BatchCoordinator
 from .credential_helper import get_credentials
@@ -152,6 +152,7 @@ class StreamingState(TypedDict):
     reason: str | None
     config: Config
     rules: RuleSet | None
+    ai: "AIClassifier | None"
 
 
 async def imap_producer(
@@ -208,6 +209,7 @@ async def imap_producer(
                     "reason": None,
                     "config": config,
                     "rules": None,
+                    "ai": None,
                 }
             else:
                 logger.warning("Could not fetch email %s, skipping", uid)
@@ -244,6 +246,104 @@ async def prefetch[T](source: AsyncGenerator[T], depth: int) -> AsyncIterator[T]
             await task
 
 
+type AIClassifier = Callable[[Email], Awaitable[EmailDecision]]
+
+
+class AIBatcher:
+    """Groups AI classification requests into batched MLX calls.
+
+    A single worker runs one batch at a time in a thread, so the model is never
+    called concurrently. Requests that arrive while a batch is running form the
+    next batch (up to ``max_batch``), so batches fill up as long as callers
+    keep more than one email in flight.
+    """
+
+    def __init__(self, config: Config, max_batch: int):
+        self._config = config
+        self._max_batch = max(1, max_batch)
+        self._queue: asyncio.Queue[tuple[Email, asyncio.Future[EmailDecision]]] = (
+            asyncio.Queue()
+        )
+        self._worker: asyncio.Task[None] | None = None
+        self.batches = 0
+
+    async def __aenter__(self) -> Self:
+        self._worker = asyncio.create_task(self._run())
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._worker:
+            self._worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._worker
+        # Nothing should be waiting by now, but never leave a caller hanging
+        while not self._queue.empty():
+            _, future = self._queue.get_nowait()
+            future.cancel()
+
+    async def classify(self, email: Email) -> EmailDecision:
+        """Queue ``email`` for the next batch and wait for its decision."""
+        future: asyncio.Future[EmailDecision] = (
+            asyncio.get_running_loop().create_future()
+        )
+        await self._queue.put((email, future))
+        return await future
+
+    async def _run(self) -> None:
+        while True:
+            batch = [await self._queue.get()]
+            while len(batch) < self._max_batch and not self._queue.empty():
+                batch.append(self._queue.get_nowait())
+
+            emails = [email for email, _ in batch]
+            self.batches += 1
+            logger.info("AI classifying a batch of %s emails", len(emails))
+            try:
+                # Blocking MLX inference; keep the event loop free for IMAP
+                decisions = await asyncio.to_thread(
+                    classify_batch_with_ai, emails, self._config
+                )
+            except Exception as e:
+                for _, future in batch:
+                    if not future.done():
+                        future.set_exception(e)
+                continue
+
+            for (_, future), decision in zip(batch, decisions, strict=True):
+                if not future.done():
+                    future.set_result(decision)
+
+
+def in_flight_limit(config: Config) -> int:
+    """Emails processed at once: two AI batches' worth, so one can fill while
+    the other runs and deterministic decisions never wait behind the model."""
+    return 2 * max(1, config.concurrent_ai_limit)
+
+
+async def for_each_concurrently[T](
+    source: AsyncIterator[T],
+    handler: Callable[[T], Awaitable[None]],
+    limit: int,
+) -> None:
+    """Run ``handler`` on each item with at most ``limit`` running at once.
+
+    ``handler`` should handle its own errors: one that escapes cancels the
+    remaining handlers and is re-raised (in an ExceptionGroup).
+    """
+    slots = asyncio.Semaphore(max(1, limit))
+
+    async def run(item: T) -> None:
+        try:
+            await handler(item)
+        finally:
+            slots.release()
+
+    async with asyncio.TaskGroup() as tg:
+        async for item in source:
+            await slots.acquire()
+            tg.create_task(run(item))
+
+
 def classify_deterministic(
     email: Email, config: Config, rules: RuleSet | None = None
 ) -> EmailDecision | None:
@@ -262,15 +362,12 @@ def classify_deterministic(
 
 
 async def classify_email(
-    email: Email, config: Config, rules: RuleSet | None = None
+    email: Email, config: Config, rules: RuleSet | None, ai: AIClassifier
 ) -> EmailDecision:
-    """Apply deterministic filters and rules, falling back to AI classification."""
+    """Apply deterministic filters and rules, falling back to ``ai``."""
     if decision := classify_deterministic(email, config, rules):
         return decision
-
-    # classify_with_ai is blocking (MLX inference); run it off the event loop
-    # so IMAP prefetching and deletes keep making progress meanwhile.
-    return await asyncio.to_thread(classify_with_ai, email, config)
+    return await ai(email)
 
 
 async def process_email_node(state: StreamingState) -> StreamingState:
@@ -280,11 +377,14 @@ async def process_email_node(state: StreamingState) -> StreamingState:
     """
     uid = state["email_uid"]
     email = state["email"]
+    ai = state["ai"]
+    if ai is None:
+        raise ValueError("StreamingState needs an AI classifier")
 
     logger.info("Processing email %s: %s", uid, email.subject)
 
     try:
-        decision_obj = await classify_email(email, state["config"], state["rules"])
+        decision_obj = await classify_email(email, state["config"], state["rules"], ai)
     except Exception as e:
         logger.exception("Error processing email %s", uid)
         # Safe default: keep the email on error
@@ -359,11 +459,11 @@ async def run_streaming_pipeline(config: Config):
         # Keep about one fetch batch ready while the current one is classified
         prefetch_depth = max(1, min(config.fetch_size, MAX_MESSAGES_PER_FETCH))
 
-        async for initial_state in prefetch(
-            imap_producer(config, session), depth=prefetch_depth
-        ):
+        async def handle(initial_state: StreamingState) -> None:
             try:
-                result = await graph.ainvoke({**initial_state, "rules": rules})
+                result = await graph.ainvoke(
+                    {**initial_state, "rules": rules, "ai": batcher.classify}
+                )
 
                 op = result.get("operation")
                 if op == "delete":
@@ -383,6 +483,13 @@ async def run_streaming_pipeline(config: Config):
             except Exception:
                 logger.exception("Error processing email")
                 stats["errors"] += 1
+
+        async with AIBatcher(config, config.concurrent_ai_limit) as batcher:
+            await for_each_concurrently(
+                prefetch(imap_producer(config, session), depth=prefetch_depth),
+                handle,
+                in_flight_limit(config),
+            )
 
         # Flush remaining deletes
         await batch_coordinator.flush()
@@ -416,16 +523,20 @@ async def run_learning_pipeline(
     started = time.monotonic()
     skipped = 0
 
-    async with IMAPSession(config.email) as session:
-        prefetch_depth = max(1, min(config.fetch_size, MAX_MESSAGES_PER_FETCH))
-        async for state in prefetch(
-            imap_producer(config, session), depth=prefetch_depth
-        ):
+    async with (
+        IMAPSession(config.email) as session,
+        AIBatcher(config, config.concurrent_ai_limit) as batcher,
+    ):
+
+        async def handle(state: StreamingState) -> None:
+            nonlocal skipped
             email = state["email"]
             decision: EmailDecision | None
             try:
                 if use_ai:
-                    decision = await classify_email(email, config)
+                    decision = await classify_email(
+                        email, config, None, batcher.classify
+                    )
                 else:
                     decision = classify_deterministic(email, config)
             except Exception:
@@ -441,6 +552,13 @@ async def run_learning_pipeline(
             if seen % 50 == 0:
                 rate = seen / (time.monotonic() - started)
                 print(f"Classified {seen} emails ({rate:.1f}/s)...")
+
+        prefetch_depth = max(1, min(config.fetch_size, MAX_MESSAGES_PER_FETCH))
+        await for_each_concurrently(
+            prefetch(imap_producer(config, session), depth=prefetch_depth),
+            handle,
+            in_flight_limit(config),
+        )
 
     if skipped:
         logger.info("%s emails had no decision and were not used", skipped)
