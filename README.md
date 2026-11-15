@@ -1,49 +1,60 @@
 # Inbox Reaper
 
-Email classification and cleaning system using a hybrid deterministic + AI pipeline with LangGraph orchestration.
+Email classification and cleaning system: an IMAP inbox is streamed through
+deterministic filters, optional learned rules and a local MLX language model,
+and messages classified as marketing are deleted in batches.
 
 ## Architecture
 
-### LangGraph-Based Parallel Processing
+### How `process` works
 
-The system uses **LangGraph** for stateful, parallel email processing:
-- **Parallel Processing**: Process multiple emails simultaneously using Send() API
-- **State Synchronization**: Thread-safe reducers for concurrent state updates
-- **Graph-Based Workflow**: Declarative DAG for complex orchestration
+`inbox-reaper process` runs the streaming pipeline in `langgraph_streaming.py`:
 
-### Key Components
+1. **Connect** - one shared IMAP connection (`IMAPSession`), authenticated with
+   the stored OAuth token, which is refreshed first if it expires within 5
+   minutes. Commands are serialized on that connection, and a dropped
+   connection is reconnected once.
+2. **Search** - `UID SEARCH ALL` on the INBOX, oldest first (`--max-emails`
+   takes the oldest N).
+3. **Fetch** - full messages in batches of up to 25 per `UID FETCH`. The next
+   batch is prefetched in the background while the current one is classified,
+   so network latency overlaps with model inference.
+4. **Classify** - each email goes through a one-node LangGraph graph
+   (`process_email`). Emails are classified one at a time; the first step that
+   returns a decision wins:
+   1. *Hard keeps* - important attachments, `--keywords`, `--whitelist-domain`
+      (always first, never overridden)
+   2. *Learned rules* - sender/domain rules from `--rules` (see below)
+   3. *Heuristics* - transactional patterns (receipts, orders, shipping) keep;
+      marketing indicators (List-Unsubscribe, "view in browser", tracking
+      subdomains) delete
+   4. *AI* - the MLX model, run in a worker thread so fetching continues
 
-**State Management** (`langgraph_state.py`):
-- `GraphState` - TypedDict with Annotated reducers for thread-safe parallel updates
-- Custom reducers: `merge_sender_stats`, `merge_email_headers`
-- Built-in reducers: `operator.add` (lists), `operator.or_` (sets)
+   Any error while classifying an email keeps it.
+5. **Delete** - delete decisions are buffered by `BatchCoordinator` and sent as
+   one IMAP delete per `--batch-size` UIDs (logged only under `--dry-run`, the
+   default), with a final flush at the end.
 
-**Main Graph** (`langgraph_dag.py`):
-1. **batch_fetch_headers** - Fetch email headers from IMAP in batch
-2. **fan_out_processing** - Spawn parallel subgraphs for each email
-3. **aggregate_results** - Collect decisions from parallel subgraphs
-4. **batch_fetch_bodies** - Fetch full bodies for AI classification (conditional)
-5. **fan_out_ai_classification** - Spawn parallel AI classification tasks
-6. **aggregate_ai_results** - Collect AI classification results
-7. **batch_delete** - Execute batch IMAP deletion
-8. **update_checkpoint** - Persist progress for resumability
+`inbox-reaper learn` reuses steps 1-4 read-only (it has no delete path) and
+turns the decisions into a reviewable `rules.json`.
 
-**Subgraphs** (`langgraph_subgraphs.py`):
-- **email_processing_subgraph** - Deterministic filter pipeline per email
-  - check_attachments → check_keywords → check_whitelist → check_sender_pattern
-- **ai_classification_subgraph** - AI classification using MLX (Apple Silicon optimized)
+### Key Modules
 
-**Checkpoint Management** (`checkpoint_manager.py`):
-- UID watermarking for resumable processing
-- Progress tracking with ETA calculations
-- SQLite-based persistence with LangGraph's SqliteSaver
+| Module | Role |
+| --- | --- |
+| `cli.py` | Click commands: `login`, `process`, `learn`, `test`, ... |
+| `langgraph_streaming.py` | IMAP session, producer and prefetch, classification order, `process`/`learn` runners |
+| `imap_client.py` | Async IMAP client (aioimaplib): XOAUTH2 login, batched fetch, MIME parsing, delete |
+| `agents.py` | Deterministic filters and the AI classifier (`classify_with_ai`) |
+| `rules.py` | `RuleSet` (load/save/match) and `RuleLearner` |
+| `mlx_backend.py` | MLX model loading and text generation |
+| `batch_coordinator.py` | Buffers UIDs and flushes them in batches |
+| `oauth_flow.py`, `credential_helper.py` | OAuth login and refresh, keyring storage |
+| `state.py` | Pydantic models: `Config`, `Email`, `EmailDecision` |
 
-### Legacy Architecture (dag.py)
-
-The original sequential pipeline is still available:
-- Pure functional agents: `ProcessingState -> ProcessingState`
-- Sequential execution with optional Google ADK integration
-- Use `--no-langgraph` flag to run legacy pipeline (when implemented)
+`langgraph_dag.py`, `langgraph_state.py` and `checkpoint_manager.py` hold an
+earlier batch design (parallel `Send()` fan-out with SQLite checkpointing).
+They are covered by tests but are not used by any CLI command.
 
 ## Installation
 
@@ -53,7 +64,7 @@ uv sync
 ```
 
 **Dependencies:**
-- `langgraph>=1.2` - Graph orchestration with checkpointing
+- `langgraph>=1.2` - Graph orchestration
 - `mlx-lm>=0.32` - Local LLM inference optimized for Apple Silicon
 - `pydantic>=2.14` - Type-safe state models
 - `authlib>=1.9` - OAuth 2.0 authentication
@@ -136,10 +147,6 @@ inbox-reaper process --email user@gmail.com \
   --keywords "Mario Romo" \
   --whitelist-domain "gmail.com" \
   --whitelist-domain "wellsfargo.com"
-
-# Increase parallel processing for faster throughput
-inbox-reaper process --email user@gmail.com \
-  --concurrent-limit 50 --batch-size 200
 ```
 
 ### Learned Rules (review before deleting)
@@ -227,34 +234,23 @@ with `--rules rules.json`; senders it covers are then decided without the model.
 
 ### Performance Tuning
 
-**Concurrency Tuning:**
-```bash
-# For CPU-bound workloads (deterministic filters)
-# Rule: concurrent_limit = CPU cores × 2
-inbox-reaper process --email user@gmail.com --concurrent-limit 16  # For 8-core CPU
+Classification is sequential, and AI inference dominates the run time, so the
+biggest win is letting more emails be decided before the model:
 
-# For Apple Silicon GPU workloads (MLX AI classification)
-# Rule: concurrent_limit based on unified memory
-inbox-reaper process --email user@gmail.com --concurrent-limit 8   # For 16GB unified memory
-inbox-reaper process --email user@gmail.com --concurrent-limit 16  # For 32GB+ unified memory
-```
+- Run `inbox-reaper learn` (or `learn --no-ai` for a quick pass) and pass
+  `--rules rules.json`; senders covered by a rule skip the model entirely.
+- Add `--keywords` and `--whitelist-domain` entries for mail you always keep.
+- A smaller model (for example `mlx-community/Llama-3.2-1B-Instruct-4bit`) is
+  faster at some cost in accuracy.
 
-**Batch Size Tuning:**
+**Batch Size:**
 ```bash
-# Smaller batches: Deletions applied more often, less memory
+# Smaller batches: Deletions applied more often
 inbox-reaper process --batch-size 50
 
-# Larger batches: Fewer IMAP roundtrips, more memory
+# Larger batches: Fewer IMAP delete round trips
 inbox-reaper process --batch-size 200
 ```
-
-**Expected Throughput:**
-- Deterministic filters only: ~12-50 emails/s (depends on CPU cores)
-- With MLX AI classification: ~10-30 emails/s (depends on Apple Silicon chip)
-  - M1/M2: ~10-15 emails/s
-  - M3/M4: ~15-25 emails/s
-  - M5: ~20-30 emails/s (with Neural Accelerators)
-- 150,000 emails: ~5-15 hours (vs. 100+ hours sequential)
 
 ### CLI Options
 
@@ -264,7 +260,7 @@ inbox-reaper process --batch-size 200
 **Processing Options:**
 - `--model TEXT` - MLX model name from Hugging Face (default: mlx-community/Llama-3.2-3B-Instruct-4bit)
 - `--batch-size INT` - Emails per batch (default: 50)
-- `--concurrent-limit INT` - Max concurrent AI classification requests (default: 25)
+- `--concurrent-limit INT` - Accepted but currently not applied; emails are classified one at a time
 - `--dry-run/--no-dry-run` - Enable dry-run mode (default: True)
 - `--email TEXT` - Email address to process (required unless in config file)
 - `--max-emails INT` - Stop after this many emails (for testing)
@@ -274,61 +270,37 @@ inbox-reaper process --batch-size 200
 - `--whitelist-domain TEXT` - Whitelisted domains to trigger KEEP (repeatable)
 - `--rules FILE` - Learned rules from `inbox-reaper learn`, applied before heuristics and AI
 
-## LangGraph Workflow Example
+## Python API
 
 ```python
-from inbox_reaper.langgraph_dag import build_langgraph
-from inbox_reaper.langgraph_state import create_initial_state
+import asyncio
+
+from inbox_reaper.langgraph_streaming import run_learning_pipeline, run_streaming_pipeline
 from inbox_reaper.state import Config
 
-# Create configuration
-config = Config(
-    model_name="mlx-community/Llama-3.2-3B-Instruct-4bit",
-    batch_size=50,
-    concurrent_ai_limit=25,
-    dry_run=True,
-)
+config = Config(email="user@gmail.com", dry_run=True)
 
-# Build LangGraph with checkpoint support
-graph = build_langgraph(config, checkpoint_path="checkpoints.db")
+# Read-only: classify the inbox and learn sender/domain rules
+rules = asyncio.run(run_learning_pipeline(config, use_ai=False))
+rules.save("rules.json")
 
-# Create initial state
-initial_state = create_initial_state(config)
-
-# Run graph with automatic checkpointing
-final_state = graph.invoke(
-    initial_state,
-    config={"configurable": {"thread_id": "email_classification_session"}}
-)
-
-# Results
-print(f"Processed: {final_state['total_processed']}")
-print(f"Kept: {final_state['total_kept']}")
-print(f"Deleted: {final_state['total_deleted']}")
+# Apply them (dry_run=True only logs what would be deleted)
+asyncio.run(run_streaming_pipeline(config.model_copy(update={"rules_path": "rules.json"})))
 ```
-
-**Parallel Execution Flow:**
-1. Fetch email headers (batch of 100)
-2. Spawn 100 parallel subgraphs (deterministic filters)
-3. Aggregate results → 60 decided, 40 need AI
-4. Fetch full bodies for 40 emails
-5. Spawn 40 parallel AI classification tasks
-6. Aggregate all 100 decisions
-7. Batch delete 75 marketing emails
-8. Update checkpoint → Resume from here if interrupted
 
 ## Design Principles
 
-1. **Parallel-First Architecture** - LangGraph Send() API for dynamic parallelism
-2. **Thread-Safe State Management** - Annotated reducers for concurrent updates
-3. **Layered Decision Pipeline** - Cheap filters first, expensive AI last
-4. **Type Safety** - Full type hints with Pydantic validation
-5. **Immutability** - State objects are frozen TypedDicts
-6. **Pure Functions** - Reducers and agents are pure transformations
+1. **Never delete by surprise** - dry-run by default, hard keeps can't be
+   overridden, errors keep the email, and `learn` is read-only
+2. **Layered decision pipeline** - cheap deterministic checks first, the model last
+3. **Reviewable rules** - learned decisions are plain JSON you can edit before applying
+4. **Overlap I/O with inference** - one IMAP connection, batched fetches, background prefetch
+5. **Type safety** - full type hints with Pydantic models, checked by mypy
 
 ## Architecture Documentation
 
-For detailed architecture documentation, see:
+These documents describe the earlier batch DAG design (`langgraph_dag.py`)
+and are kept for background; the pipeline above is what `process` runs today:
 - **[DESIGN.md](DESIGN.md)** - High-level design patterns and learnings
   - LangGraph architecture with parallel processing
   - Reducer patterns and thread-safety guarantees
@@ -347,15 +319,13 @@ For detailed architecture documentation, see:
 
 ## Next Steps
 
-- [x] Add OAuth 2.0 authentication with secure credential storage
-- [x] Add LangGraph-based parallel processing architecture
-- [x] Add SQLite persistence for progress tracking with checkpointing
-- [x] Implement batch database operations with reducers
-- [x] Add concurrent AI classification with LangGraph Send() API
-- [ ] Add IMAP email fetching using OAuth credentials
-- [ ] Add pipelined I/O (fetch while processing)
-- [ ] Implement full Google ADK integration
-- [ ] Add email deletion functionality
+- [x] OAuth 2.0 authentication with secure credential storage
+- [x] IMAP email fetching using OAuth credentials
+- [x] Pipelined I/O (fetch while classifying)
+- [x] Batched email deletion
+- [x] Read-only rule learning (`learn`) and rule application (`process --rules`)
+- [ ] Apply `--concurrent-limit` (classify several emails at once)
+- [ ] Resume an interrupted run without re-classifying kept emails
 
 ## Development
 
@@ -386,7 +356,6 @@ uv run pre-commit install
 
 **Pre-commit hooks run automatically on every commit!** They check:
 - Ruff linting and formatting
-- Black formatting
 - Mypy type checking
 
 ```bash
