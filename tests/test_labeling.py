@@ -15,6 +15,8 @@ from inbox_reaper.labeling import (
     append_jsonl,
     compare,
     disagreements,
+    evaluate,
+    format_evaluation,
     load_labels,
     review_order,
     training_examples,
@@ -181,3 +183,41 @@ class TestTraining:
         assert "Trained on 80 emails" in result.output
         combiner = Combiner.load(out)
         assert combiner.metrics["false_deletes"] == 0
+
+
+class TestEvaluate:
+    def test_counts_wrong_deletes_per_path(self):
+        alert = make_sample(
+            "1",
+            subject="Direct Debit Withdrawal",
+            sender="Alerts <alerts@e.bank.example>",
+            body="Withdrawal posted. View in browser. Unsubscribe.",
+            has_list_unsubscribe=True,
+        )
+        promo = make_sample(
+            "2",
+            subject="Big sale",
+            sender="Deals <deals@e.shop.example>",
+            body="Save 50%. View in browser. Unsubscribe.",
+            has_list_unsubscribe=True,
+        )
+        code = make_sample("3", subject="Your verification code is 123456")
+        personal = make_sample("4", subject="Dinner?", sender="Alex <alex@gmail.com>")
+        labels = {
+            "1": lab("1", "keep", loss=Loss.BAD),
+            "2": lab("2", "delete"),
+            "3": lab(
+                "3", "keep", lifetime=Lifetime.MINUTES
+            ),  # expired: effectively delete
+            "4": lab("4", "keep"),
+        }
+        ev = evaluate([alert, promo, code, personal], [labels], Config(email="me@x"))
+        assert ev.paths["sender_pattern"].deletes == 2
+        assert ev.paths["sender_pattern"].wrong_deletes == 1
+        assert (
+            ev.paths["expired"].deletes == 1 and ev.paths["expired"].wrong_deletes == 0
+        )
+        assert ev.wrong_deletes == 1 and ev.precision == 2 / 3
+        assert ev.recall == 1.0
+        assert "Direct Debit Withdrawal" in ev.wrong[0]
+        assert "precision" in format_evaluation(ev)[0]

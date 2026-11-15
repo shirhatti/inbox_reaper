@@ -227,11 +227,13 @@ class TestTimeSensitivity:
                 FilterReason.EXPIRED,
             }
 
-    def test_delivery_notice_expires_after_30_days(self):
-        email = make_email("Out for delivery today", age=timedelta(days=40))
-        assert check_expiry(email, CTX.config, now=NOW).decision == Decision.DELETE
-        recent = make_email("Out for delivery today", age=timedelta(days=3))
-        assert check_expiry(recent, CTX.config, now=NOW) is None
+    def test_day_scale_mail_is_never_deleted_by_the_rule(self):
+        # Only the combiner sees day-scale expiry (as a feature): its patterns
+        # are too broad to delete on their own
+        old = make_email("Out for delivery today", age=timedelta(days=400))
+        assert check_expiry(old, CTX.config, now=NOW) is None
+        f = temporal_features(old, CTX)
+        assert (f["lifetime_days"], f["expired"]) == (1.0, 1.0)
 
     def test_regular_mail_is_never_expired(self):
         old = make_email("Your receipt", age=timedelta(days=3000))

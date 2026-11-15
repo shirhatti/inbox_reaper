@@ -871,3 +871,52 @@ def train_command(samples_path, label_paths, config, rules_path, output):
     click.echo("Strongest features:")
     for name, weight in combiner.top_weights(8):
         click.echo(f"  {weight:+.2f}  {name}")
+
+
+@cli.command("evaluate")
+@click.argument("samples_path", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--labels",
+    "label_paths",
+    multiple=True,
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Labels files; when several label the same email, the first wins",
+)
+@click.option("--config", type=click.Path(exists=True), help="Configuration file")
+@click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--combiner",
+    "combiner_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Also evaluate the pipeline with this combiner",
+)
+@click.option("--show", default=15, show_default=True, help="Wrong deletes to list")
+def evaluate_command(
+    samples_path, label_paths, config, rules_path, combiner_path, show
+):
+    """Delete precision and recall of each deletion path on labelled mail.
+
+    Replays the deterministic stages (and the combiner) without running the
+    AI. Compare 'today' against '--combiner' before trusting a new model: a
+    wrong delete is the error that matters.
+    """
+    from .combiner import Combiner  # noqa: PLC0415
+    from .labeling import evaluate, format_evaluation, load_labels, load_samples  # noqa: PLC0415
+    from .rules import RuleSet  # noqa: PLC0415
+
+    config_obj = build_config(config, {}, require_email=False)
+    rules = RuleSet.load(rules_path) if rules_path else None
+    samples = load_samples(samples_path)
+    labels = [load_labels(p) for p in label_paths]
+    runs = [evaluate(samples, labels, config_obj, rules)]
+    if combiner_path:
+        runs.append(
+            evaluate(samples, labels, config_obj, rules, Combiner.load(combiner_path))
+        )
+    for ev in runs:
+        for line in format_evaluation(ev):
+            click.echo(line)
+        for row in ev.wrong[:show]:
+            click.echo(f"    wrong delete - {row}")
+        click.echo()

@@ -12,6 +12,7 @@ import logging
 import random
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from datetime import datetime
 from typing import Any, Self, TypedDict
 
 import aioimaplib
@@ -357,6 +358,7 @@ def classify_deterministic(
     rules: RuleSet | None = None,
     *,
     heuristics: bool = True,
+    now: datetime | None = None,
 ) -> EmailDecision | None:
     """Hard keeps, expiry, learned rules, then heuristics; None if nothing matched.
 
@@ -368,7 +370,7 @@ def classify_deterministic(
             return decision
 
     # Time-sensitive mail: expired codes go even if a sender rule would keep them
-    if decision := check_expiry(email, config):
+    if decision := check_expiry(email, config, now):
         return decision
 
     if rules and (decision := rules.decide(email)):

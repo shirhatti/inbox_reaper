@@ -3,9 +3,10 @@
 import json
 import random
 
+import numpy as np
 import pytest
 
-from inbox_reaper.combiner import Combiner, TrainingExample, train
+from inbox_reaper.combiner import Combiner, TrainingExample, _thresholds, train
 from inbox_reaper.state import Decision
 
 
@@ -92,3 +93,39 @@ class TestPersistence:
         path.write_text(json.dumps(data))
         with pytest.raises(ValueError, match="version"):
             Combiner.load(path)
+
+
+class TestPrecisionFirstThresholds:
+    def test_zero_budget_sits_above_every_keep(self):
+        p = np.array([0.2, 0.7, 0.95, 0.99, 0.999])
+        y = np.array([0, 0, 1, 1, 1], dtype=float)
+        lo, hi = _thresholds(p, y, np.ones(5), max_missed=0.1, max_false_delete=0.0)
+        assert 0.7 < hi <= 0.95
+        assert lo < hi
+
+    def test_keep_at_the_top_disables_deletes(self):
+        p = np.array([0.1, 0.99, 0.999999])
+        y = np.array([1, 1, 0], dtype=float)
+        _, hi = _thresholds(p, y, np.ones(3), max_missed=0.1, max_false_delete=0.0)
+        assert hi == 1.0  # nothing can score >= 1.0: the combiner never deletes
+
+    def test_budget_counts_weight_not_emails(self):
+        p = np.array([0.5, 0.9, 0.95, 0.99])
+        y = np.array([0, 0, 1, 1], dtype=float)
+        # A 10% budget tolerates the 0.9 keep at weight 1, but not at weight 10
+        light = _thresholds(p, y, np.array([1, 1, 1, 1.0]), 0.1, max_false_delete=0.5)[
+            1
+        ]
+        heavy = _thresholds(p, y, np.array([1, 10, 1, 1.0]), 0.1, max_false_delete=0.5)[
+            1
+        ]
+        assert light <= 0.9 < heavy
+
+    def test_metrics_report_precision_and_recall(self):
+        m = train(synthetic_examples()).metrics
+        assert 0 <= m["delete_recall"] <= 1
+        assert m["delete_precision"] == pytest.approx(
+            m["deletes_caught"] / (m["deletes_caught"] + m["false_deletes"])
+            if m["deletes_caught"] + m["false_deletes"]
+            else 1.0
+        )

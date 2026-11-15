@@ -311,3 +311,124 @@ def train_combiner(
     rules: RuleSet | None = None,
 ) -> Combiner:
     return train(training_examples(samples, label_sets, config, rules))
+
+
+# ---------------------------------------------------------------------------
+# Evaluation: precision and recall per deletion path
+# ---------------------------------------------------------------------------
+
+
+class PathStats(BaseModel):
+    """Outcomes for one decision path (e.g. expiry, heuristics, combiner)."""
+
+    deletes: int = 0
+    wrong_deletes: int = 0  # deleted mail labelled keep: the unforgivable error
+    keeps: int = 0
+    missed_deletes: int = 0  # kept mail labelled delete: harmless
+
+    @property
+    def precision(self) -> float:
+        return (
+            (self.deletes - self.wrong_deletes) / self.deletes if self.deletes else 1.0
+        )
+
+
+class Evaluation(BaseModel):
+    name: str
+    paths: dict[str, PathStats]
+    to_ai: int
+    total: int
+    delete_labels: int
+    wrong: list[str] = Field(default_factory=list)  # "path: subject" of wrong deletes
+
+    @property
+    def deletes(self) -> int:
+        return sum(p.deletes for p in self.paths.values())
+
+    @property
+    def wrong_deletes(self) -> int:
+        return sum(p.wrong_deletes for p in self.paths.values())
+
+    @property
+    def precision(self) -> float:
+        return (
+            (self.deletes - self.wrong_deletes) / self.deletes if self.deletes else 1.0
+        )
+
+    @property
+    def recall(self) -> float:
+        return (self.deletes - self.wrong_deletes) / max(1, self.delete_labels)
+
+
+def evaluate(
+    samples: list[Sample],
+    label_sets: list[dict[str, Label]],
+    config: Config,
+    rules: RuleSet | None = None,
+    combiner: Combiner | None = None,
+) -> Evaluation:
+    """Replay the deterministic stages (and the combiner, if given) on labelled mail.
+
+    Emails left to the AI are counted as ``to_ai``; the AI is not run. Each
+    email is judged as of its ``sampled_at`` time, against its effective label.
+    """
+    # Deferred: imports LangGraph
+    from .langgraph_streaming import classify_deterministic  # noqa: PLC0415
+
+    paths: dict[str, PathStats] = {}
+    wrong: list[str] = []
+    to_ai = total = delete_labels = 0
+    for sample in samples:
+        label = next((s[sample.uid] for s in label_sets if sample.uid in s), None)
+        if label is None:
+            continue
+        total += 1
+        truth = effective_action(label, sample)
+        delete_labels += truth == Decision.DELETE
+        email = sample.email
+        decision = classify_deterministic(
+            email, config, rules, heuristics=combiner is None, now=sample.sampled_at
+        )
+        verdict: Decision | None = None
+        path = "ai"
+        if decision is not None:
+            verdict, path = decision.decision, decision.reason.value
+        elif combiner is not None:
+            ctx = FeatureContext(config=config, rules=rules, now=sample.sampled_at)
+            verdict, _ = combiner.decide(extract_features(email, ctx))
+            path = "combiner"
+        if verdict is None:
+            to_ai += 1
+            continue
+        stats = paths.setdefault(path, PathStats())
+        if verdict == Decision.DELETE:
+            stats.deletes += 1
+            if truth == Decision.KEEP:
+                stats.wrong_deletes += 1
+                wrong.append(f"{path}: {email.subject[:60]} ({email.sender[:40]})")
+        else:
+            stats.keeps += 1
+            stats.missed_deletes += truth == Decision.DELETE
+    return Evaluation(
+        name="with combiner" if combiner else "today (heuristics)",
+        paths=paths,
+        to_ai=to_ai,
+        total=total,
+        delete_labels=delete_labels,
+        wrong=wrong,
+    )
+
+
+def format_evaluation(ev: Evaluation) -> list[str]:
+    lines = [
+        f"{ev.name}: delete precision {ev.precision:.1%} "
+        f"({ev.wrong_deletes} wrong of {ev.deletes} deletes), recall {ev.recall:.1%}, "
+        f"{ev.to_ai}/{ev.total} left to the AI"
+    ]
+    for name, p in sorted(ev.paths.items(), key=lambda kv: -kv[1].deletes):
+        lines.append(
+            f"  {name:16} deletes {p.deletes:>4} (wrong {p.wrong_deletes:>3}, "
+            f"precision {p.precision:6.1%})   keeps {p.keeps:>4} "
+            f"(of which deletable {p.missed_deletes})"
+        )
+    return lines

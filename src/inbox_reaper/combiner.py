@@ -118,23 +118,45 @@ def _thresholds(
 ) -> tuple[float, float]:
     """(keep_threshold, delete_threshold) for probabilities ``p`` and labels ``y``.
 
-    The delete threshold is the lowest one whose confidently-deleted keep mail
-    stays within ``max_false_delete`` of the total keep weight.
+    The delete threshold sits just above the highest-scoring keep-labelled
+    emails until the weight of keeps left above it fits ``max_false_delete``
+    (a share of total keep weight; 0 means above every keep). It can reach
+    1.0, which disables confident deletes entirely.
     """
     keep_p, keep_w = p[y == 0], w[y == 0]
     budget = max_false_delete * keep_w.sum()
-    delete_threshold = 0.999
-    for t in sorted(set(keep_p.tolist()) | {0.999}, reverse=True):
-        candidate = min(0.999, t + 1e-3)
-        if keep_w[keep_p >= candidate].sum() > budget:
+    delete_threshold = 0.0
+    above = 0.0
+    for i in np.argsort(-keep_p):
+        above += keep_w[i]
+        if above > budget:
+            delete_threshold = float(min(1.0, keep_p[i] + 1e-6))
             break
-        delete_threshold = candidate
     keep_threshold = 0.0
     for t in np.unique(p):
         bucket = p <= t
         if (w * y)[bucket].sum() / w[bucket].sum() <= max_missed:
             keep_threshold = float(t)
-    return min(keep_threshold, delete_threshold - 1e-3), delete_threshold
+    return min(keep_threshold, delete_threshold - 1e-6), delete_threshold
+
+
+def _cv_probabilities(
+    x: np.ndarray, y: np.ndarray, w: np.ndarray, l2: float, folds: int, seed: int
+) -> np.ndarray:
+    """Held-out P(delete) for every row, by k-fold cross-validation."""
+    held_out = np.zeros(len(y))
+    order = np.random.default_rng(seed).permutation(len(y))
+    k = max(2, min(folds, len(y)))
+    for i in range(k):
+        test = order[i::k]
+        train_idx = np.setdiff1d(order, test)
+        if len(set(y[train_idx])) < 2:  # degenerate fold: the prior
+            held_out[test] = y[train_idx].mean()
+            continue
+        held_out[test] = _predict(
+            _fit(x[train_idx], y[train_idx], w[train_idx], l2), x[test]
+        )
+    return held_out
 
 
 def train(
@@ -143,10 +165,10 @@ def train(
     l2: float = 1.0,
     folds: int = 5,
     max_missed: float = 0.1,
-    max_false_delete: float = 0.005,
+    max_false_delete: float = 0.0,
     seed: int = 0,
 ) -> Combiner:
-    """Fit a combiner and pick thresholds from cross-validated probabilities.
+    """Fit a combiner and pick precision-first thresholds by cross-validation.
 
     Args:
         examples: Labelled feature vectors (both labels must be present)
@@ -154,10 +176,13 @@ def train(
         folds: Cross-validation folds used for thresholds and metrics
         max_missed: Largest weighted share of delete-labelled mail allowed in
             the confident-keep bucket (a missed delete only leaves mail behind)
-        max_false_delete: Largest share of keep weight (by default 0.5%) the
-            delete threshold may confidently delete; heavily weighted keeps
-            (mail that would be bad to lose) use up the budget faster
+        max_false_delete: Share of keep weight the delete threshold may still
+            confidently delete. The default 0 puts the threshold above every
+            held-out keep: precision first, recall is what gives way.
         seed: Fold shuffling seed
+
+    The reported metrics are nested cross-validation: each outer fold picks its
+    thresholds from held-out probabilities on its own training part only.
     """
     labels = {e.label for e in examples}
     if labels != {Decision.KEEP, Decision.DELETE}:
@@ -168,8 +193,6 @@ def train(
     y = np.array([e.label == Decision.DELETE for e in examples], dtype=float)
     w = np.array([e.weight for e in examples], dtype=float)
 
-    # Cross-validation. Each fold picks thresholds from its own training data and
-    # applies them to its held-out part, so the metrics are honest estimates.
     held_out = np.zeros(len(examples))
     decided_delete = np.zeros(len(examples), dtype=bool)
     decided_keep = np.zeros(len(examples), dtype=bool)
@@ -177,35 +200,36 @@ def train(
     k = max(2, min(folds, len(examples)))
     for i in range(k):
         test = order[i::k]
-        train_idx = np.setdiff1d(order, test)
-        if len(set(y[train_idx])) < 2:  # degenerate fold: undecided at the prior
-            held_out[test] = y[train_idx].mean()
+        tr = np.setdiff1d(order, test)
+        if len(set(y[tr])) < 2:  # degenerate fold: undecided
+            held_out[test] = y[tr].mean()
             continue
-        params = _fit(x[train_idx], y[train_idx], w[train_idx], l2)
-        held_out[test] = _predict(params, x[test])
-        lo, hi = _thresholds(
-            _predict(params, x[train_idx]),
-            y[train_idx],
-            w[train_idx],
-            max_missed,
-            max_false_delete,
-        )
+        held_out[test] = _predict(_fit(x[tr], y[tr], w[tr], l2), x[test])
+        inner = _cv_probabilities(x[tr], y[tr], w[tr], l2, folds, seed + i + 1)
+        lo, hi = _thresholds(inner, y[tr], w[tr], max_missed, max_false_delete)
         decided_delete[test] = held_out[test] >= hi
         decided_keep[test] = held_out[test] <= lo
 
-    # Deployed thresholds come from the pooled held-out probabilities, which are
-    # less optimistic than in-sample ones
+    # Deployed thresholds: from the pooled held-out probabilities of all data
     keep_threshold, delete_threshold = _thresholds(
         held_out, y, w, max_missed, max_false_delete
     )
 
     deletes = y == 1
+    true_deletes = float((decided_delete & deletes).sum())
+    false_deletes = float((decided_delete & ~deletes).sum())
     metrics = {
         "examples": float(len(examples)),
         "keep_examples": float((~deletes).sum()),
         "delete_examples": float(deletes.sum()),
-        "false_deletes": float((decided_delete & ~deletes).sum()),
-        "deletes_caught": float((decided_delete & deletes).sum()),
+        "false_deletes": false_deletes,
+        "deletes_caught": true_deletes,
+        "delete_precision": (
+            true_deletes / (true_deletes + false_deletes)
+            if true_deletes + false_deletes
+            else 1.0
+        ),
+        "delete_recall": true_deletes / max(1.0, float(deletes.sum())),
         "missed_deletes_kept": float((decided_keep & deletes).sum()),
         "contested_share": float((~decided_delete & ~decided_keep).mean()),
     }
