@@ -1,433 +1,345 @@
 # Inbox Reaper
 
-Email classification and cleaning system using a hybrid deterministic + AI pipeline with LangGraph orchestration.
+Cleans an IMAP inbox (Gmail or Outlook) on your Mac. Each email is checked by
+deterministic rules, then by a small model trained on your own labels, then,
+if still undecided, by a local MLX language model. Nothing leaves your
+machine except the IMAP connection itself.
 
-## Architecture
+**Precision comes first.** Deleting an important email is unforgivable;
+leaving junk behind is harmless. So:
 
-### LangGraph-Based Parallel Processing
+- `process` is a **dry run by default**: it only logs what it would delete.
+- Every error keeps the email.
+- `learn`, `sample` and `history` are read-only (`BODY.PEEK` and `EXAMINE`:
+  nothing is even marked read).
+- Every way an email can be deleted is measured on labelled mail with
+  `inbox-reaper evaluate` before you trust it.
 
-The system uses **LangGraph** for stateful, parallel email processing:
-- **Parallel Processing**: Process multiple emails simultaneously using Send() API
-- **State Synchronization**: Thread-safe reducers for concurrent state updates
-- **Checkpointing**: Automatic progress persistence with resume capability
-- **Graph-Based Workflow**: Declarative DAG for complex orchestration
+> **What a delete does:** on Gmail, messages are copied to Trash, then removed
+> from INBOX. On Outlook and other providers they are flagged `\Deleted` and
+> expunged, so treat a delete as permanent.
 
-### Key Components
+## Quick start
 
-**State Management** (`langgraph_state.py`):
-- `GraphState` - TypedDict with Annotated reducers for thread-safe parallel updates
-- Custom reducers: `merge_sender_stats`, `merge_email_headers`
-- Built-in reducers: `operator.add` (lists), `operator.or_` (sets)
-
-**Main Graph** (`langgraph_dag.py`):
-1. **batch_fetch_headers** - Fetch email headers from IMAP in batch
-2. **fan_out_processing** - Spawn parallel subgraphs for each email
-3. **aggregate_results** - Collect decisions from parallel subgraphs
-4. **batch_fetch_bodies** - Fetch full bodies for AI classification (conditional)
-5. **fan_out_ai_classification** - Spawn parallel AI classification tasks
-6. **aggregate_ai_results** - Collect AI classification results
-7. **batch_delete** - Execute batch IMAP deletion
-8. **update_checkpoint** - Persist progress for resumability
-
-**Subgraphs** (`langgraph_subgraphs.py`):
-- **email_processing_subgraph** - Deterministic filter pipeline per email
-  - check_attachments → check_keywords → check_whitelist → check_sender_pattern
-- **ai_classification_subgraph** - AI classification using MLX (Apple Silicon optimized)
-
-**Checkpoint Management** (`checkpoint_manager.py`):
-- UID watermarking for resumable processing
-- Progress tracking with ETA calculations
-- SQLite-based persistence with LangGraph's SqliteSaver
-
-### Legacy Architecture (dag.py)
-
-The original sequential pipeline is still available:
-- Pure functional agents: `ProcessingState -> ProcessingState`
-- Sequential execution with optional Google ADK integration
-- Use `--no-langgraph` flag to run legacy pipeline (when implemented)
-
-## Installation
+Requires macOS on Apple Silicon and Python 3.13 ([uv](https://docs.astral.sh/uv/)).
 
 ```bash
-# Install dependencies
 uv sync
+uv run inbox-reaper download-model          # one-time, ~1.8 GB
+uv run inbox-reaper login user@outlook.com  # opens the browser (OAuth)
+uv run inbox-reaper process --email user@outlook.com --max-emails 50
 ```
 
-**Dependencies:**
-- `langgraph>=1.2` - Graph orchestration with checkpointing
-- `mlx-lm>=0.32` - Local LLM inference optimized for Apple Silicon
-- `pydantic>=2.14` - Type-safe state models
-- `authlib>=1.9` - OAuth 2.0 authentication
-- `keyring>=25.7` - Secure credential storage
-- `click>=8.5` - CLI framework
+The last command is a dry run over the 50 oldest emails. Add `--no-dry-run`
+only after you've read its log, and ideally after training and evaluating a
+combiner (below).
 
-**Note**: This tool is optimized for **macOS with Apple Silicon** (M1/M2/M3/M4/M5). MLX provides native GPU acceleration on Apple hardware.
+## How an email is decided
 
-## Authentication
+`process` streams the INBOX over one IMAP connection, oldest first, fetching
+up to 25 messages per request and prefetching the next batch while the current
+one is classified. For each email, the first step that decides wins:
 
-Inbox Reaper uses OAuth 2.0 for secure email access. Credentials are stored securely using the [keyring](https://pypi.org/project/keyring/) library, which automatically uses your system's native credential storage:
-- **macOS**: Keychain
-- **Windows**: Windows Credential Locker
-- **Linux**: Secret Service (GNOME Keyring / KWallet)
+1. **Hard keeps:** an important attachment (`.pdf`, `.doc`, `.docx` by
+   default), a `--keywords` match, or a `--whitelist-domain` sender. Nothing
+   overrides these.
+2. **Time rule:** one-time codes, sign-in links and similar are kept for
+   their first 30 minutes and deleted once more than an hour old.
+3. **Learned rules:** sender or domain rules from `--rules` (see
+   [Learned rules](#learned-rules)).
+4. **Combiner** (with `--combiner`): a trained model scores the email's
+   feature vector. It deletes only when the score clears every keep-labelled
+   email it was validated on, keeps when it is clearly safe, and otherwise
+   passes the email on with a summary of the signals that fired.
+   Without a combiner, only one heuristic runs here: receipts, orders and
+   shipping notices are kept. Marketing signals (unsubscribe footers, "view in
+   browser") never delete on their own, because bank alerts and statements
+   carry them too.
+5. **AI:** the local MLX model (Llama 3.2 3B by default) decides whatever is
+   left. Waiting emails are grouped into one batched call of up to
+   `--concurrent-limit` emails, and the model never runs twice at once.
 
-### Login to Email Account
+Deletes are buffered and sent `--batch-size` at a time. There is no resume
+state: a re-run classifies whatever is still in the INBOX.
+
+### Features
+
+`features.py` runs independent processors over every email. Each one adds
+named values (`<processor>.<name>`, mostly 0/1 flags or scores in [0, 1]):
+
+| Processor | Signals |
+| --- | --- |
+| `filter` | each deterministic check's verdict (attachment, keyword, whitelist, transactional, marketing) |
+| `header` | List-Id, List-Unsubscribe (and one-click), Precedence: bulk, Auto-Submitted, Feedback-ID, bulk-mail platform headers, reply threading, DKIM signer vs From domain, SPF/DMARC, Reply-To elsewhere, recipient count, Outlook bulk/spam scores, GitHub notification reason |
+| `link` | link count, share of tracking and off-site links (Outlook Safe Links unwrapped), images, tracking pixels |
+| `sender` | free-mail provider, automated address (no-reply, notifications...), subdomain sender, display name, written by a person (the name matches the address), shared "via" a service |
+| `content` | record words (receipt, statement, order, reservation...) versus promotional wording, prices, emoji, caps and "!" in the subject; order and booking numbers, account endings, amounts with cents; addressed to you, your name in the subject or greeting, "Dear customer" greetings; word count, link and image density |
+| `rule` | a learned rule's keep/delete verdict |
+| `time` | lifetime class (minutes / days / forever), expired, fresh, age |
+| `history` | from your own mailbox: whether you've read or flagged this email, how often you open this sender's (and domain's) mail, how much they send, whether you've ever written to them, whether it's a thread you took part in |
+
+The `history` features need a mailbox history (see
+[Mailbox history](#mailbox-history)). Without one they are all 0.
+
+Text reaches the features and the AI with HTML and leaked CSS stripped,
+invisible spacer characters removed, and every URL replaced by
+`[link: domain]`.
+
+### The combiner
+
+`combiner.py` is a weighted logistic regression over the feature vector. Its
+two thresholds come from cross-validation:
+
+- **Delete threshold:** above the highest score any held-out keep-labelled
+  email reached. If a keep scores at the very top, the combiner never deletes.
+- **Keep threshold:** low enough that at most 10% of delete-labelled mail
+  would be kept.
+
+Keep labels are weighted by how bad losing the email would be (1, 3 or 10).
+The metrics `train` prints are nested cross-validation, so they are measured
+on emails the model didn't see.
+
+## Training the combiner on your labels
+
+Every file below stays on your machine and holds mailbox data. Keep them
+private; `.gitignore` already excludes `samples*.jsonl`, `labels*.jsonl`,
+`review*.jsonl` and `history*.json`.
 
 ```bash
-# Gmail (auto-detected)
-inbox-reaper login user@gmail.com
+# 1. A random sample of your inbox (read-only)
+inbox-reaper sample --email user@outlook.com -n 300 -o samples.jsonl
 
-# Outlook/Hotmail (auto-detected)
-inbox-reaper login user@outlook.com
+# 2. Optional: your mailbox history, for the history features (read-only)
+inbox-reaper history --email user@outlook.com -o history.json
 
-# Specify provider explicitly
-inbox-reaper login user@company.com --provider gmail
+# 3. Label it. For each email: keep or delete, how long it stays useful
+#    (minutes / days / forever), a category, and how bad losing it would be.
+#    Progress is saved after every email; run again to resume.
+inbox-reaper label samples.jsonl -o labels-human.jsonl
+#    Label first where another labeller (e.g. a model) might be wrong:
+inbox-reaper label samples.jsonl -o labels-human.jsonl --prioritize labels-model.jsonl
+
+# 4. Compare labellers per dimension and list keep/delete disagreements
+inbox-reaper compare-labels labels-human.jsonl labels-model.jsonl --samples samples.jsonl
+
+# 5. Train; when several files label the same email, the first wins
+inbox-reaper train samples.jsonl --labels labels-human.jsonl --labels labels-model.jsonl \
+  --history history.json
+
+# 6. Wrong deletes, precision and recall for each deletion path:
+#    today's pipeline versus the pipeline with the combiner
+inbox-reaper evaluate samples.jsonl --labels labels-human.jsonl \
+  --combiner combiner.json --history history.json
+
+# 7. Use it (add --history history.json if you trained with it)
+inbox-reaper process --email user@outlook.com --combiner combiner.json
 ```
 
-This will:
-1. Open your browser for OAuth authentication
-2. Securely store your credentials
-3. Automatically refresh tokens when needed
+Training applies each label's lifetime. An email labelled *keep* but useful
+for only minutes or days counts as *delete* if it was already past that when
+sampled.
 
-### Manage Accounts
+With a few hundred labels the delete threshold is set by a handful of
+borderline keeps, so results move between training runs. Read the wrong
+deletes that `evaluate` lists, not just the totals.
+
+### Mailbox history
+
+`inbox-reaper history` scans the INBOX (sender, date, read and flagged state of
+every message) and the Sent folder (who you've written to, and the Message-IDs
+of what you sent), read-only. The first scan of a large mailbox is slow (about
+15 minutes for 77,000 messages on Outlook). After that the file is updated in
+place: only new messages are fetched, and read and flagged state comes from
+two cheap `UID SEARCH` commands, so an update takes seconds. If the server
+renumbers a folder (a new UIDVALIDITY), that folder is rescanned; `--full`
+forces a rescan.
+
+A combiner trained with `--history` remembers it. Run it with
+`process --history history.json`, which updates the file before classifying.
+`evaluate`, and `process` without a history, refuse to run such a combiner,
+so the history features can never silently drop to 0.
+
+Whether history helps depends on your mailbox: compare `train` with and
+without `--history` on the same labels. If you keep everything marked read,
+the read-state signals carry no information.
+
+## Deleting safely: review, then delete exactly what you approved
 
 ```bash
-# List all stored accounts
-inbox-reaper accounts
+# 1. Dry run: nothing changes; every decision goes to the report
+inbox-reaper process --email user@outlook.com --combiner combiner.json --no-ai \
+  --max-emails 2000 --report report.jsonl
 
-# List with detailed information
-inbox-reaper accounts --verbose
+# 2. Read the report's delete rows
 
-# Test IMAP connection
-inbox-reaper test user@gmail.com
-
-# Remove stored credentials
-inbox-reaper logout user@gmail.com
+# 3. Real run limited to the reviewed deletes: an email not approved in the
+#    report can't be deleted, and each is re-checked before it goes
+inbox-reaper process --email user@outlook.com --combiner combiner.json --no-ai \
+  --only-uids report.jsonl --no-dry-run
 ```
 
-### OAuth Details
+On servers with UIDPLUS (Gmail, Outlook) the expunge removes only the deleted
+UIDs, never other messages that happen to be flagged `\Deleted`.
 
-Inbox Reaper uses **Thunderbird's public OAuth client IDs** for Gmail and Outlook with **PKCE** (Proof Key for Code Exchange) for enhanced security:
-- ✅ No need to create your own OAuth app
-- ✅ Works out of the box
-- ✅ PKCE protection against authorization code interception
-- ✅ Secure and privacy-focused
-- ⚠️ Credentials are stored locally on your machine only
+## Learned rules
 
-**Technical Implementation:**
-- Uses [Authlib](https://docs.authlib.org/) for OAuth 2.0 with PKCE
-- SHA256 code challenge method for maximum security
-- Automatic token refresh when expired
-
-## Usage
-
-### Basic Usage
+`learn` classifies your inbox read-only and writes sender and domain rules you
+can review and edit. `process --rules` applies them after the hard keeps
+(which a rule can never override) and before the combiner and AI.
 
 ```bash
-# First-time setup: Download model (one-time, ~1.8GB)
-inbox-reaper download-model
-
-# Run with defaults (dry-run mode, Llama-3.2-3B-Instruct-4bit)
-inbox-reaper process --email user@gmail.com
-
-# Customize model and settings
-inbox-reaper process --email user@gmail.com \
-  --model mlx-community/Llama-3.2-1B-Instruct-4bit \
-  --batch-size 100
-
-# Add keywords and whitelisted domains
-inbox-reaper process --email user@gmail.com \
-  --keywords "important" \
-  --keywords "Mario Romo" \
-  --whitelist-domain "gmail.com" \
-  --whitelist-domain "wellsfargo.com"
-
-# Increase parallel processing for faster throughput
-inbox-reaper process --email user@gmail.com \
-  --concurrent-limit 50 --batch-size 200
-```
-
-### Learned Rules (review before deleting)
-
-`learn` classifies your inbox **read-only** and writes deterministic sender/domain
-rules you can review and edit. `process --rules` then applies them after the
-attachment/keyword/whitelist checks (which a rule can never override) and before
-heuristics and AI.
-
-```bash
-# Read-only: never deletes, regardless of --dry-run
-inbox-reaper learn --email user@gmail.com -o rules.json
-inbox-reaper learn --email user@gmail.com --no-ai   # fast, deterministic signals only
-
-# Review/edit rules.json, then apply
-inbox-reaper process --email user@gmail.com --rules rules.json
+inbox-reaper learn --email user@outlook.com -o rules.json
+inbox-reaper learn --email user@outlook.com --no-ai   # fast, deterministic signals only
+inbox-reaper process --email user@outlook.com --rules rules.json
 ```
 
 A rule is learned only when a sender (or domain) has at least `--min-support`
 emails (default 3) and `--min-agreement` of them agree (default 90%). Any email
-kept by an attachment, keyword or whitelist check blocks a delete rule for that
+kept by an attachment, keyword or whitelist check blocks a delete rule for its
 sender. Domain rules need two or more senders, are never learned for free-mail
 domains such as gmail.com, and are dropped if a sender rule on that domain
-disagrees. Each entry looks like:
+disagrees. Sender rules take precedence over domain rules, and domain rules
+also cover subdomains:
 
 ```json
 {"match": "domain", "value": "e.shop.com", "action": "delete",
  "support": 42, "agreement": 1.0, "source": "learned"}
 ```
 
-Delete an entry to drop it, flip `action`, or add your own with `"source": "manual"`.
-Sender rules take precedence over domain rules; domain rules also cover subdomains.
+Delete an entry to drop it, flip its `action`, or add your own with
+`"source": "manual"`.
 
-### Configuration Files
+## Configuration
 
-Instead of passing CLI arguments each time, you can use a configuration file:
+Options can come from a YAML or JSON file. Command-line flags override it.
 
 ```bash
-# Copy example config
 cp config.example.yaml config.yaml
-# Or: cp config.example.json config.json
-
-# Edit your config file
-vim config.yaml
-
-# Run with config file (CLI args override file values)
 inbox-reaper process --config config.yaml
-
-# Mix config file with CLI overrides
-inbox-reaper process --config config.yaml --model mlx-community/Llama-3.2-1B-Instruct-4bit
 ```
 
-**Example config.yaml:**
 ```yaml
-# AI Settings
+email: user@outlook.com
 model_name: mlx-community/Llama-3.2-3B-Instruct-4bit
-concurrent_ai_limit: 25
-
-# Email
-email: user@gmail.com
-
-# Filters
-keywords:
-  - important
-  - urgent
-whitelist_domains:
-  - example.com
-
-# Safety
+concurrent_ai_limit: 8        # emails per batched AI call
+batch_size: 50                # UIDs per delete
+max_emails: null              # oldest N only; null = all
+keywords: [important, urgent]
+whitelist_domains: [example.com]
+important_extensions: [.pdf, .doc, .docx]
+rules_path: null              # from `learn`
+combiner_path: null           # from `train`
+history_path: null            # from `history`, if the combiner uses it
 dry_run: true
 ```
 
-See `config.example.yaml` or `config.example.json` for all available options.
+See `config.example.yaml` for every option.
 
-### Checkpoint and Resume
+## Commands
 
-The system automatically creates checkpoints after each batch. If interrupted (CTRL-C, crash, etc.), you can resume:
+| Command | What it does |
+| --- | --- |
+| `login EMAIL [--provider]` | OAuth sign-in; the token is kept in the system keychain |
+| `logout EMAIL`, `accounts` | Remove stored credentials; list accounts |
+| `test EMAIL` | Check the IMAP connection |
+| `diagnose EMAIL [--refresh]` | Inspect the stored token, optionally test a refresh |
+| `download-model [--model]` | Download the MLX model |
+| `process` | Classify the INBOX and delete (dry run by default) |
+| `learn` | Read-only: classify and write sender/domain rules |
+| `sample` | Read-only: save a random sample of emails for labelling |
+| `history` | Read-only: save or update INBOX and Sent behaviour for the history features |
+| `label` | Label sampled emails interactively, along several dimensions |
+| `compare-labels` | Agreement between labellers, and their disagreements |
+| `train` | Train the combiner from labelled samples |
+| `evaluate` | Wrong deletes, precision and recall per deletion path |
+| `fetch-email --email --uid` | Save one message as `.eml` (debugging) |
+| `version` | Print the version |
 
-```bash
-# Start processing
-inbox-reaper process
+`process` options:
 
-# ... interrupted after 50,000 emails processed ...
+| Option | Default | |
+| --- | --- | --- |
+| `--config PATH` | | YAML or JSON configuration file |
+| `--email TEXT` | | Account to process |
+| `--dry-run/--no-dry-run` | dry run | Log deletes instead of performing them |
+| `--max-emails INT` | all | Process only the oldest N |
+| `--model TEXT` | Llama 3.2 3B 4-bit | MLX model (Hugging Face ID) |
+| `--concurrent-limit INT` | 8 | Emails per batched AI call |
+| `--batch-size INT` | 50 | UIDs per delete |
+| `--keywords TEXT` | | Keep emails containing this (repeatable) |
+| `--whitelist-domain TEXT` | | Keep emails from this domain (repeatable) |
+| `--rules FILE` | | Rules from `learn` |
+| `--combiner FILE` | | Combiner from `train` |
+| `--history FILE` | | Mailbox history for a combiner trained with one (created if missing, then updated) |
+| `--ai/--no-ai` | on | `--no-ai` keeps whatever the filters and combiner don't confidently decide, without loading the model |
+| `--report FILE` | | Write every decision (uid, date, sender, subject, outcome, reason) as JSONL |
+| `--only-uids FILE` | | Process only these UIDs: one per line, or a `--report` file's delete rows |
 
-# Resume from last checkpoint
-inbox-reaper process
-# Prompts: "Do you want to resume from the last checkpoint? [Y/n]"
+## Performance
 
-# Clear checkpoint and start fresh
-inbox-reaper checkpoint clear
+The AI dominates run time; everything decided before it is nearly free.
 
-# View checkpoint status
-inbox-reaper checkpoint status
-```
+- **Decide more before the model:** a combiner, `--rules`, keywords and
+  whitelisted domains all mean fewer emails reach the AI.
+- **Batching:** `--concurrent-limit` makes each AI email about 15-25% cheaper
+  on an M-series Mac. Past about 16 emails per batch it gets slower per email.
+- **A smaller model** (`mlx-community/Llama-3.2-1B-Instruct-4bit`) is faster but
+  less accurate.
+- **Memory:** the 3B model needs about 2-3 GB of unified memory. On a 16-18 GB
+  Mac, don't run two model processes at once, or the machine will swap.
 
-**Checkpoint Features:**
-- Exactly-once processing (no duplicate deletions)
-- UID watermarking for IMAP pagination
-- Persistent sender statistics
-- Progress tracking with ETA
-
-### Performance Tuning
-
-**Concurrency Tuning:**
-```bash
-# For CPU-bound workloads (deterministic filters)
-# Rule: concurrent_limit = CPU cores × 2
-inbox-reaper process --email user@gmail.com --concurrent-limit 16  # For 8-core CPU
-
-# For Apple Silicon GPU workloads (MLX AI classification)
-# Rule: concurrent_limit based on unified memory
-inbox-reaper process --email user@gmail.com --concurrent-limit 8   # For 16GB unified memory
-inbox-reaper process --email user@gmail.com --concurrent-limit 16  # For 32GB+ unified memory
-```
-
-**Batch Size Tuning:**
-```bash
-# Smaller batches: More frequent checkpoints, less memory
-inbox-reaper process --batch-size 50
-
-# Larger batches: Fewer IMAP roundtrips, more memory
-inbox-reaper process --batch-size 200
-```
-
-**Expected Throughput:**
-- Deterministic filters only: ~12-50 emails/s (depends on CPU cores)
-- With MLX AI classification: ~10-30 emails/s (depends on Apple Silicon chip)
-  - M1/M2: ~10-15 emails/s
-  - M3/M4: ~15-25 emails/s
-  - M5: ~20-30 emails/s (with Neural Accelerators)
-- 150,000 emails: ~5-15 hours (vs. 100+ hours sequential)
-
-### CLI Options
-
-**Configuration:**
-- `--config PATH` - Path to configuration file (YAML or JSON)
-
-**Processing Options:**
-- `--model TEXT` - MLX model name from Hugging Face (default: mlx-community/Llama-3.2-3B-Instruct-4bit)
-- `--batch-size INT` - Emails per batch (default: 50)
-- `--fetch-size INT` - IMAP fetch size per request (default: 100)
-- `--concurrent-limit INT` - Max concurrent parallel tasks (default: 25)
-- `--dry-run/--no-dry-run` - Enable dry-run mode (default: True)
-- `--checkpoint-path TEXT` - Checkpoint database path (default: checkpoints.db)
-- `--email TEXT` - Email address to process (required unless in config file)
-
-**Filter Configuration:**
-- `--keywords TEXT` - Critical keywords to trigger KEEP (repeatable)
-- `--whitelist-domain TEXT` - Whitelisted domains to trigger KEEP (repeatable)
-- `--auto-delete-threshold INT` - Marketing emails before auto-delete (default: 5)
-- `--enable-sender-tracking/--no-sender-tracking` - Track sender patterns (default: True)
-
-**Legacy Options:**
-- `--use-adk/--no-adk` - Use Google ADK (experimental, default: False)
-- `--no-langgraph` - Use legacy sequential pipeline (default: False)
-
-## LangGraph Workflow Example
+## Python API
 
 ```python
-from inbox_reaper.langgraph_dag import build_langgraph
-from inbox_reaper.langgraph_state import create_initial_state
+import asyncio
+
+from inbox_reaper.langgraph_streaming import run_learning_pipeline, run_streaming_pipeline
 from inbox_reaper.state import Config
 
-# Create configuration
-config = Config(
-    model_name="mlx-community/Llama-3.2-3B-Instruct-4bit",
-    batch_size=50,
-    concurrent_ai_limit=25,
-    dry_run=True,
-)
+config = Config(email="user@outlook.com", dry_run=True)
 
-# Build LangGraph with checkpoint support
-graph = build_langgraph(config, checkpoint_path="checkpoints.db")
+# Read-only: classify the inbox and learn sender/domain rules
+rules = asyncio.run(run_learning_pipeline(config, use_ai=False))
+rules.save("rules.json")
 
-# Create initial state
-initial_state = create_initial_state(config)
-
-# Run graph with automatic checkpointing
-final_state = graph.invoke(
-    initial_state,
-    config={"configurable": {"thread_id": "email_classification_session"}}
-)
-
-# Results
-print(f"Processed: {final_state['total_processed']}")
-print(f"Kept: {final_state['total_kept']}")
-print(f"Deleted: {final_state['total_deleted']}")
+# Apply them (dry_run=True only logs what would be deleted)
+asyncio.run(run_streaming_pipeline(config.model_copy(update={"rules_path": "rules.json"})))
 ```
 
-**Parallel Execution Flow:**
-1. Fetch email headers (batch of 100)
-2. Spawn 100 parallel subgraphs (deterministic filters)
-3. Aggregate results → 60 decided, 40 need AI
-4. Fetch full bodies for 40 emails
-5. Spawn 40 parallel AI classification tasks
-6. Aggregate all 100 decisions
-7. Batch delete 75 marketing emails
-8. Update checkpoint → Resume from here if interrupted
+## Code map
 
-## Design Principles
+| Module | Role |
+| --- | --- |
+| `cli.py` | Click commands |
+| `langgraph_streaming.py` | IMAP session, fetch and prefetch, decision order, `process` / `learn` / `sample` runners, AI batching |
+| `imap_client.py` | Async IMAP client: XOAUTH2, batched fetch, MIME parsing, read-only header fetch, delete |
+| `text_utils.py` | HTML/CSS stripping, URL compaction, link and image extraction |
+| `agents.py` | Deterministic filters and the AI classifier |
+| `features.py` | Feature processors and the time rule |
+| `history.py` | Read-only mailbox history (INBOX and Sent) |
+| `combiner.py` | Logistic-regression combiner and precision-first thresholds |
+| `labeling.py` | Samples, labels, comparison, training, evaluation |
+| `rules.py` | Learned rules: load, save, match, learn |
+| `mlx_backend.py` | MLX model loading and (batched) generation |
+| `batch_coordinator.py` | Buffers delete UIDs and flushes them in batches |
+| `oauth_flow.py`, `oauth_config.py`, `credential_helper.py` | OAuth with PKCE (Thunderbird's public client IDs), token refresh, keychain storage |
+| `config_loader.py`, `state.py` | Configuration loading; Pydantic models |
 
-1. **Parallel-First Architecture** - LangGraph Send() API for dynamic parallelism
-2. **Thread-Safe State Management** - Annotated reducers for concurrent updates
-3. **Resumable by Default** - Automatic checkpointing with UID watermarking
-4. **Layered Decision Pipeline** - Cheap filters first, expensive AI last
-5. **Type Safety** - Full type hints with Pydantic validation
-6. **Immutability** - State objects are frozen TypedDicts
-7. **Pure Functions** - Reducers and agents are pure transformations
+## Authentication
 
-## Architecture Documentation
-
-For detailed architecture documentation, see:
-- **[DESIGN.md](DESIGN.md)** - High-level design patterns and learnings
-  - LangGraph architecture with parallel processing
-  - Reducer patterns and thread-safety guarantees
-  - Checkpoint format and resume process
-  - Performance benchmarks and tuning guide
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Detailed graph structure
-  - Node responsibilities and data flow
-  - State schema with reducer annotations
-  - Subgraph design patterns
-  - Integration points (IMAP, MLX, SQLite)
-- **[docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)** - Parallel processing deep dive
-  - Send() API usage patterns
-  - Synchronization primitives
-  - Batch optimization techniques
-  - Performance benchmarks and scaling analysis
-
-## Next Steps
-
-- [x] Add OAuth 2.0 authentication with secure credential storage
-- [x] Add LangGraph-based parallel processing architecture
-- [x] Add SQLite persistence for progress tracking with checkpointing
-- [x] Implement batch database operations with reducers
-- [x] Add concurrent AI classification with LangGraph Send() API
-- [ ] Add IMAP email fetching using OAuth credentials
-- [ ] Add pipelined I/O (fetch while processing)
-- [ ] Implement full Google ADK integration
-- [ ] Add email deletion functionality
+`login` uses OAuth 2.0 with PKCE and Thunderbird's public client IDs for
+Gmail and Outlook, so you don't need to register an app. Tokens are stored
+with [keyring](https://pypi.org/project/keyring/) (Keychain on macOS) and
+refreshed automatically when they're within 5 minutes of expiry.
 
 ## Development
 
-### Quick Setup (Recommended)
-
 ```bash
-# Install dependencies and set up pre-commit hooks automatically
 uv sync
-uv run setup-dev
+uv run setup-dev                    # dev dependencies and pre-commit hooks
+uv run pre-commit run --all-files   # ruff and mypy, the same checks as CI
+uv run pytest
 ```
-
-This will:
-- Install all development dependencies
-- Set up pre-commit hooks (runs ruff and mypy automatically)
-- Verify your environment is ready
-
-### Manual Setup
-
-```bash
-# Install development dependencies
-uv sync
-
-# Install pre-commit hooks manually
-uv run pre-commit install
-```
-
-### Code Quality
-
-**Pre-commit hooks run automatically on every commit!** They check:
-- Ruff linting and formatting
-- Black formatting
-- Mypy type checking
-
-```bash
-# Run pre-commit hooks manually on all files
-uv run pre-commit run --all-files
-
-# Individual tool commands (optional)
-ruff check src/          # Lint
-ruff format src/         # Format
-mypy src/                # Type check
-pytest                   # Run tests
-```
-
-**Important**: If pre-commit hooks pass locally, CI will pass. Always run `setup-dev` to ensure hooks are installed.
 
 ## License
 

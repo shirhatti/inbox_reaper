@@ -9,6 +9,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .timeutil import utcnow
+
 
 class Decision(StrEnum):
     """Classification decision for an email."""
@@ -26,7 +28,15 @@ class FilterReason(StrEnum):
     WHITELIST = "whitelist"
     SENDER_PATTERN = "sender_pattern"
     RULE = "rule"  # learned/manual sender or domain rule
+    EXPIRED = (
+        "expired"  # time-sensitive mail (codes, sign-in links) past its useful life
+    )
+    TIME_SENSITIVE = (
+        "time_sensitive"  # time-sensitive mail still within its useful life
+    )
+    COMBINER = "combiner"  # trained combiner over the feature vector
     AI_CLASSIFIED = "ai_classified"
+    UNDECIDED = "undecided"  # no confident verdict and the AI is off: kept
     NONE = "none"
 
 
@@ -43,6 +53,12 @@ class Email(BaseModel):
     attachments: list[str] = Field(default_factory=list)
     # True when the message carries a List-Unsubscribe header (bulk mail)
     has_list_unsubscribe: bool = False
+    # Selected headers (lowercased name -> value; repeats joined by newlines)
+    headers: dict[str, str] = Field(default_factory=dict)
+    # Link destinations from the HTML and text bodies (Safe Links unwrapped)
+    links: list[str] = Field(default_factory=list)
+    image_count: int = 0
+    tracking_pixels: int = 0
 
 
 class EmailDecision(BaseModel):
@@ -54,22 +70,7 @@ class EmailDecision(BaseModel):
     decision: Decision
     reason: FilterReason
     confidence: float = 1.0
-    processed_at: datetime = Field(default_factory=datetime.now)
-
-
-class SenderStats(BaseModel):
-    """Statistics for a sender across multiple emails."""
-
-    model_config = ConfigDict(frozen=True)
-
-    sender: str
-    marketing_count: int = 0
-    total_count: int = 0
-    auto_delete: bool = False
-
-    def should_auto_delete(self, threshold: int = 5) -> bool:
-        """Check if sender has enough marketing emails to auto-delete."""
-        return self.marketing_count >= threshold
+    processed_at: datetime = Field(default_factory=utcnow)
 
 
 class Config(BaseModel):
@@ -78,7 +79,8 @@ class Config(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     # AI settings (MLX)
-    concurrent_ai_limit: int = 25
+    # Emails per batched MLX call; past ~16 a batch gets slower per email
+    concurrent_ai_limit: int = 8
     model_name: str = "mlx-community/Llama-3.2-3B-Instruct-4bit"
 
     # Email settings
@@ -89,8 +91,7 @@ class Config(BaseModel):
     batch_size: int = 50
     max_emails: int | None = None
 
-    # Decision thresholds
-    auto_delete_threshold: int = 5
+    # AI deletes only at or above this stated confidence
     ai_confidence_threshold: float = 0.7
 
     # Keywords & whitelist
@@ -100,108 +101,18 @@ class Config(BaseModel):
         default_factory=lambda: [".pdf", ".doc", ".docx"]
     )
 
-    # Performance
-    enable_pipelining: bool = True
-    enable_sender_tracking: bool = True
-
     # Learned rules file (from `inbox-reaper learn`), applied before AI
     rules_path: str | None = None
+    # Trained combiner (from `inbox-reaper train`): decides from the feature vector
+    combiner_path: str | None = None
+    # Mailbox history file, updated incrementally when the combiner needs one
+    history_path: str | None = None
+    # False: emails nothing confidently decides are kept, the AI never runs
+    use_ai: bool = True
+    # Process only these UIDs (a file of UIDs, or a report's delete rows)
+    only_uids_path: str | None = None
+    # Write every decision (uid, date, sender, subject, outcome) as JSONL
+    report_path: str | None = None
 
     # Safety
     dry_run: bool = True
-
-
-class ProcessingState(BaseModel):
-    """Complete state for the email processing pipeline.
-
-    This is the single source of truth that flows through the DAG.
-    All transformations are pure functions: State -> State.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    # Configuration
-    config: Config
-
-    # Current batch being processed
-    emails: list[Email] = Field(default_factory=list)
-
-    # Decisions made for current batch
-    decisions: list[EmailDecision] = Field(default_factory=list)
-
-    # Historical data (for resume and sender tracking)
-    processed_uids: set[str] = Field(default_factory=set)
-    sender_stats: dict[str, SenderStats] = Field(default_factory=dict)
-
-    # Pagination/windowing
-    min_uid: str | None = None
-    max_uid: str | None = None
-
-    # Progress tracking
-    total_processed: int = 0
-    total_deleted: int = 0
-    total_kept: int = 0
-    consecutive_empty_batches: int = 0
-
-    # Error handling
-    errors: list[str] = Field(default_factory=list)
-
-    def add_decision(self, decision: EmailDecision) -> "ProcessingState":
-        """Pure function to add a decision and update counters."""
-        new_decisions = [*self.decisions, decision]
-        new_processed_uids = self.processed_uids | {decision.email.uid}
-
-        # Update sender stats
-        sender = decision.email.sender
-        current_stats = self.sender_stats.get(sender, SenderStats(sender=sender))
-
-        new_sender_stats = self.sender_stats.copy()
-        new_sender_stats[sender] = SenderStats(
-            sender=sender,
-            total_count=current_stats.total_count + 1,
-            marketing_count=current_stats.marketing_count
-            + (1 if decision.decision == Decision.DELETE else 0),
-            auto_delete=(
-                current_stats.marketing_count + 1 >= self.config.auto_delete_threshold
-                if decision.decision == Decision.DELETE
-                else current_stats.auto_delete
-            ),
-        )
-
-        return self.model_copy(
-            update={
-                "decisions": new_decisions,
-                "processed_uids": new_processed_uids,
-                "sender_stats": new_sender_stats,
-                "total_processed": self.total_processed + 1,
-                "total_deleted": self.total_deleted
-                + (1 if decision.decision == Decision.DELETE else 0),
-                "total_kept": self.total_kept
-                + (1 if decision.decision == Decision.KEEP else 0),
-            }
-        )
-
-    def add_error(self, error: str) -> "ProcessingState":
-        """Pure function to add an error."""
-        return self.model_copy(update={"errors": [*self.errors, error]})
-
-    def update_batch(self, emails: list[Email]) -> "ProcessingState":
-        """Pure function to update current batch and pagination."""
-        if not emails:
-            return self.model_copy(
-                update={"consecutive_empty_batches": self.consecutive_empty_batches + 1}
-            )
-
-        uids = [email.uid for email in emails]
-        new_min_uid = min(uids)
-        new_max_uid = max(uids)
-
-        return self.model_copy(
-            update={
-                "emails": emails,
-                "decisions": [],  # Reset decisions for new batch
-                "min_uid": new_min_uid,
-                "max_uid": new_max_uid,
-                "consecutive_empty_batches": 0,
-            }
-        )

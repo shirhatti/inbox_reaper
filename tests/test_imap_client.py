@@ -1,5 +1,6 @@
 """Tests for IMAP response parsing and message extraction (no network)."""
 
+import asyncio
 import email
 from email.message import EmailMessage
 from unittest.mock import AsyncMock
@@ -77,6 +78,38 @@ class TestMessageParsing:
         assert msg.body.strip() == "Plain body"
         assert msg.has_list_unsubscribe is True
 
+    def test_keeps_feature_headers_links_and_pixels(self):
+        msg = EmailMessage()
+        msg["From"] = "Shop <news@e.shop.example>"
+        msg["Subject"] = "Sale"
+        msg["Date"] = "Mon, 06 Jan 2025 10:00:00 +0000"
+        msg["List-Id"] = "<news.shop.example>"
+        msg["Precedence"] = "bulk"
+        msg["X-Github-Reason"] = "mention"
+        msg["Received"] = "from relay.example (dropped: routing header)"
+        msg.set_content("See https://shop.example/plain")
+        msg.add_alternative(
+            '<p>Sale <a href="https://click.e.shop.example/t?u=1">shop</a></p>'
+            '<img src="logo.png"><img src="p.gif" width="1" height="1">',
+            subtype="html",
+        )
+        email = make_client()._parse_message("9", msg.as_bytes())
+        assert email.headers == {
+            "list-id": "<news.shop.example>",
+            "precedence": "bulk",
+            "x-github-reason": "mention",
+        }
+        # HTML links win over plain-text URLs
+        assert email.links == ["https://click.e.shop.example/t?u=1"]
+        assert (email.image_count, email.tracking_pixels) == (2, 1)
+
+    def test_plain_text_links_when_no_html(self):
+        email = make_client()._parse_message(
+            "9", raw_message(Body="Track it at https://carrier.example/t/123 today")
+        )
+        assert email.links == ["https://carrier.example/t/123"]
+        assert "[link: carrier.example]" in email.body
+
     def test_list_unsubscribe_absent(self):
         msg = make_client()._parse_message("5", raw_message())
         assert msg.has_list_unsubscribe is False
@@ -102,6 +135,23 @@ class TestMessageParsing:
         assert body.endswith("Unsubscribe")
         assert len(body) <= MAX_BODY_CHARS
 
+    def test_blank_plain_part_falls_back_to_html(self):
+        msg = EmailMessage()
+        msg.set_content("\r\n")
+        msg.add_alternative("<p>The schedule is here</p>", subtype="html")
+        body = make_client()._extract_body(email.message_from_bytes(msg.as_bytes()))
+        assert body == "The schedule is here"
+
+    def test_nested_mime_headers_and_css_are_dropped(self):
+        msg = EmailMessage()
+        msg.set_content(
+            "Content-Type: text/plain; charset=UTF-8\r\n"
+            "Content-Transfer-Encoding: 7bit\r\n\r\n"
+            "span {font-family: Arial !important;}\nToday's Deliveries"
+        )
+        body = make_client()._extract_body(email.message_from_bytes(msg.as_bytes()))
+        assert body.strip() == "Today's Deliveries"
+
     def test_respects_declared_charset(self):
         msg = EmailMessage()
         msg.set_content("Grüße", charset="iso-8859-1", cte="8bit")
@@ -118,7 +168,6 @@ class TestFetchMessages:
 
     @pytest.mark.parametrize("uids", [["1", "2"]])
     def test_batches_into_single_fetch(self, uids):
-        import asyncio
 
         lines = []
         for uid in uids:
@@ -139,7 +188,6 @@ class TestFetchMessages:
         assert {m.subject for m in messages.values()} == {"S1", "S2"}
 
     def test_timeout_raises_connection_error(self):
-        import asyncio
 
         async def run():
             client = make_client()
@@ -154,3 +202,27 @@ class TestFetchMessages:
 
         with pytest.raises(IMAPConnectionError):
             asyncio.run(run())
+
+
+class TestDeleteEmails:
+    def client(self, capabilities: set[str]) -> AsyncIMAPClient:
+        client = AsyncIMAPClient("me@example.com", "token", provider="outlook")
+        imap = AsyncMock()
+        imap.has_capability = lambda c: c in capabilities
+        ok = AsyncMock(result="OK", lines=[])
+        imap.uid.return_value = ok
+        imap.expunge.return_value = ok
+        client.client = imap
+        return client
+
+    def test_expunges_only_our_uids_with_uidplus(self):
+        client = self.client({"UIDPLUS"})
+        assert asyncio.run(client.delete_emails(["5", "9"])) == 2
+        calls = [c.args for c in client.client.uid.call_args_list]
+        assert calls == [("store", "5,9", "+FLAGS", r"(\Deleted)"), ("expunge", "5,9")]
+        client.client.expunge.assert_not_called()
+
+    def test_plain_expunge_without_uidplus(self):
+        client = self.client(set())
+        asyncio.run(client.delete_emails(["5"]))
+        client.client.expunge.assert_awaited_once()

@@ -6,8 +6,10 @@ This module handles OAuth 2.0 authentication flows:
 - Token refresh
 """
 
+import logging
 import time
 import webbrowser
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import cast
 from urllib.parse import parse_qs, urlparse
@@ -16,8 +18,16 @@ import requests
 from authlib.common.security import generate_token
 from authlib.integrations.requests_client import OAuth2Session
 
+from .credential_helper import store_credentials
 from .imap_client import AsyncIMAPClient, IMAPAuthError, IMAPConnectionError
 from .oauth_config import get_oauth_config
+from .timeutil import expiry_after, parse_timestamp, utcnow
+
+logger = logging.getLogger(__name__)
+
+# Refresh tokens that expire within this window so a fresh connection does not
+# get dropped mid-batch.
+TOKEN_REFRESH_MARGIN = timedelta(minutes=5)
 
 
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
@@ -72,7 +82,7 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"Invalid request")
 
-    def log_message(self, format, *args):
+    def log_message(self, format, *args):  # noqa: A002 - stdlib signature
         """Suppress log messages."""
 
 
@@ -144,7 +154,7 @@ def _perform_redirect_flow(email: str, provider: str, config: dict) -> dict:
 
     # Exchange authorization code for tokens (authlib handles PKCE automatically)
     return cast(
-        dict,
+        "dict",
         session.fetch_token(
             config["token_uri"],
             authorization_response=authorization_response,
@@ -295,7 +305,7 @@ def refresh_access_token(refresh_token: str, provider: str) -> dict:
             token={"refresh_token": refresh_token},
         )
         return cast(
-            dict,
+            "dict",
             session.refresh_token(config["token_uri"], refresh_token=refresh_token),
         )
 
@@ -348,3 +358,46 @@ async def verify_imap_connection(
     except Exception as e:
         # Unexpected error
         return False, f"Unexpected error: {e!s}"
+
+
+def token_needs_refresh(creds: dict, margin: timedelta = TOKEN_REFRESH_MARGIN) -> bool:
+    """Whether the stored access token expires within ``margin``.
+
+    A missing or unparseable ``expires_at`` counts as expiring, so the token is
+    refreshed proactively. Naive timestamps from older versions are read as
+    local time.
+    """
+    try:
+        expires_at = parse_timestamp(creds["expires_at"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    return expires_at < utcnow() + margin
+
+
+def refresh_if_expiring(
+    email: str, creds: dict, margin: timedelta = TOKEN_REFRESH_MARGIN
+) -> bool:
+    """Refresh and persist the access token if it expires within ``margin``.
+
+    Updates ``creds`` in place (storing ``expires_at`` as aware UTC, which also
+    migrates credentials written in the old naive format).
+
+    Returns:
+        True if the token was refreshed
+
+    Raises:
+        Exception: If the refresh request fails
+    """
+    if not token_needs_refresh(creds, margin):
+        return False
+    if not creds.get("refresh_token"):
+        logger.warning("Token expiring but no refresh token; using existing token")
+        return False
+
+    logger.info("Access token expired or expiring, refreshing...")
+    tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
+    creds["access_token"] = tokens["access_token"]
+    creds["expires_at"] = expiry_after(tokens.get("expires_in", 3600))
+    store_credentials(email, creds)
+    logger.info("Refreshed credentials persisted to keyring")
+    return True

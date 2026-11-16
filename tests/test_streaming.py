@@ -1,10 +1,19 @@
+import asyncio
+import json
+import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from inbox_reaper.imap_client import IMAPConnectionError
 from inbox_reaper.langgraph_streaming import (
+    AIBatcher,
     IMAPSession,
+    classify_email,
+    for_each_concurrently,
     prefetch,
     run_streaming_pipeline,
 )
@@ -18,6 +27,15 @@ def make_email(uid: str, subject: str, sender: str, body: str = "") -> Email:
         sender=sender,
         body=body,
         date=datetime(2025, 1, 1),
+    )
+
+
+def ai_keep(email: Email) -> EmailDecision:
+    return EmailDecision(
+        email=email,
+        decision=Decision.KEEP,
+        reason=FilterReason.AI_CLASSIFIED,
+        confidence=0.0,
     )
 
 
@@ -44,7 +62,7 @@ def make_mock_client(messages: dict[str, Email]) -> AsyncMock:
 
 
 MESSAGES = {
-    # Marketing: unsubscribe footer + marketing subdomain -> delete
+    # Marketing: unsubscribe footer + marketing subdomain -> AI decides
     "1": make_email(
         "1",
         "Big sale",
@@ -60,13 +78,10 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # Never load a real model in tests; AI says "keep" unless a test overrides
         patcher = patch(
-            "inbox_reaper.langgraph_streaming.classify_with_ai",
-            side_effect=lambda email, config: EmailDecision(
-                email=email,
-                decision=Decision.KEEP,
-                reason=FilterReason.AI_CLASSIFIED,
-                confidence=0.0,
-            ),
+            "inbox_reaper.langgraph_streaming.classify_batch_with_ai",
+            side_effect=lambda emails, config, signals=None: [
+                ai_keep(email) for email in emails
+            ],
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -91,25 +106,30 @@ class TestStreamingPipeline(unittest.IsolatedAsyncioTestCase):
 
     @patch("inbox_reaper.langgraph_streaming.create_imap_client")
     async def test_streaming_pipeline_deletes(self, mock_create_client):
-        mock_client = make_mock_client(MESSAGES)
+        # An expired one-time code is deleted without the AI; the marketing
+        # email is left to the AI, which keeps it here
+        code = make_email("3", "Your verification code is 123456", "no-reply@x.example")
+        mock_client = make_mock_client({"1": MESSAGES["1"], "3": code})
         mock_create_client.return_value = mock_client
 
         await run_streaming_pipeline(make_config(dry_run=False))
 
-        mock_client.delete_emails.assert_awaited_once_with(["1"])
+        mock_client.delete_emails.assert_awaited_once_with(["3"])
         mock_create_client.assert_called_once()
 
-    @patch("inbox_reaper.langgraph_streaming.classify_with_ai")
+    @patch("inbox_reaper.langgraph_streaming.classify_batch_with_ai")
     @patch("inbox_reaper.langgraph_streaming.create_imap_client")
     async def test_unmatched_emails_go_to_ai(self, mock_create_client, mock_ai):
         email = make_email("7", "Hello", "Robot <bot@service.example>", "Hi there")
         mock_create_client.return_value = make_mock_client({"7": email})
-        mock_ai.return_value = EmailDecision(
-            email=email,
-            decision=Decision.DELETE,
-            reason=FilterReason.AI_CLASSIFIED,
-            confidence=0.9,
-        )
+        mock_ai.return_value = [
+            EmailDecision(
+                email=email,
+                decision=Decision.DELETE,
+                reason=FilterReason.AI_CLASSIFIED,
+                confidence=0.9,
+            )
+        ]
 
         await run_streaming_pipeline(make_config(dry_run=False))
 
@@ -225,3 +245,217 @@ class TestPrefetch(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAIBatcher(unittest.IsolatedAsyncioTestCase):
+    async def test_requests_waiting_during_a_batch_form_the_next_batch(self):
+        started = threading.Event()
+        release = threading.Event()
+        seen: list[list[str]] = []
+
+        def fake_batch(emails, config, signals=None):
+            seen.append([e.uid for e in emails])
+            if len(seen) == 1:
+                started.set()
+                release.wait(timeout=5)  # hold the first batch while others queue
+            return [ai_keep(e) for e in emails]
+
+        emails = [make_email(str(i), "s", "a@b.example") for i in range(7)]
+        with patch(
+            "inbox_reaper.langgraph_streaming.classify_batch_with_ai",
+            side_effect=fake_batch,
+        ):
+            async with AIBatcher(make_config(), max_batch=4) as batcher:
+                first = asyncio.create_task(batcher.classify(emails[0]))
+                await asyncio.to_thread(started.wait, 5)
+                rest = [asyncio.create_task(batcher.classify(e)) for e in emails[1:]]
+                await asyncio.sleep(0.05)
+                release.set()
+                results = await asyncio.gather(first, *rest)
+
+        assert seen == [["0"], ["1", "2", "3", "4"], ["5", "6"]]
+        assert [r.email.uid for r in results] == [e.uid for e in emails]
+
+    async def test_batch_failure_reaches_every_caller(self):
+        emails = [make_email(str(i), "s", "a@b.example") for i in range(2)]
+        with patch(
+            "inbox_reaper.langgraph_streaming.classify_batch_with_ai",
+            side_effect=RuntimeError("boom"),
+        ):
+            async with AIBatcher(make_config(), max_batch=4) as batcher:
+                results = await asyncio.gather(
+                    *(batcher.classify(e) for e in emails), return_exceptions=True
+                )
+        assert all(isinstance(r, RuntimeError) for r in results)
+
+
+class TestForEachConcurrently(unittest.IsolatedAsyncioTestCase):
+    async def test_respects_limit_and_handles_every_item(self):
+        running = peak = 0
+        done: list[int] = []
+
+        async def source():
+            for i in range(10):
+                yield i
+
+        async def handler(i):
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+            done.append(i)
+
+        await for_each_concurrently(source(), handler, limit=3)
+        assert peak == 3
+        assert sorted(done) == list(range(10))
+
+
+class TestConcurrentPipeline(unittest.IsolatedAsyncioTestCase):
+    @patch("inbox_reaper.langgraph_streaming.create_imap_client")
+    async def test_ai_emails_are_batched_and_deterministic_ones_dont_wait(
+        self, mock_create_client
+    ):
+        # 6 emails for the AI interleaved with 6 keyword keeps
+        messages = {}
+        for i in range(12):
+            uid = str(i + 1)
+            if i % 2:
+                messages[uid] = make_email(uid, "Important", "boss@corp.example")
+            else:
+                messages[uid] = make_email(uid, "Hello", "bot@svc.example", "Hi")
+        mock_create_client.return_value = make_mock_client(messages)
+        batches: list[int] = []
+
+        def fake_batch(emails, config, signals=None):
+            batches.append(len(emails))
+            time.sleep(0.05)  # model is slow; more AI requests queue meanwhile
+            return [
+                EmailDecision(
+                    email=e,
+                    decision=Decision.DELETE,
+                    reason=FilterReason.AI_CLASSIFIED,
+                    confidence=0.9,
+                )
+                for e in emails
+            ]
+
+        with patch(
+            "inbox_reaper.langgraph_streaming.classify_batch_with_ai",
+            side_effect=fake_batch,
+        ):
+            await run_streaming_pipeline(
+                make_config(dry_run=False, concurrent_ai_limit=4, batch_size=100)
+            )
+
+        assert sum(batches) == 6
+        assert max(batches) > 1  # requests were grouped
+        assert max(batches) <= 4  # never above the limit
+        deleted = mock_create_client.return_value.delete_emails.await_args.args[0]
+        assert sorted(deleted, key=int) == ["1", "3", "5", "7", "9", "11"]
+
+
+class TestCombinerRouting(unittest.IsolatedAsyncioTestCase):
+    def combiner(self, p_delete: float):
+        combiner = MagicMock(needs_history=False)
+        combiner.decide.return_value = (
+            Decision.DELETE
+            if p_delete >= 0.9
+            else Decision.KEEP
+            if p_delete <= 0.1
+            else None,
+            p_delete,
+        )
+        return combiner
+
+    async def test_confident_combiner_decides_without_ai(self):
+        ai = AsyncMock()
+        email = make_email("5", "Weekly deals", "news@e.shop.example", "Hi")
+        decision = await classify_email(
+            email, make_config(), None, ai, self.combiner(0.97)
+        )
+        assert decision.decision == Decision.DELETE
+        assert decision.reason == FilterReason.COMBINER
+        assert decision.confidence == 0.97
+        ai.assert_not_awaited()
+
+    async def test_contested_goes_to_ai_with_signals(self):
+        email = make_email("5", "Hello", "news@e.shop.example", "Hi")
+        email = email.model_copy(update={"headers": {"precedence": "bulk"}})
+        ai = AsyncMock(return_value=ai_keep(email))
+        decision = await classify_email(
+            email, make_config(), None, ai, self.combiner(0.5)
+        )
+        assert decision.reason == FilterReason.AI_CLASSIFIED
+        (_, signals), _ = ai.await_args
+        assert "bulk mail" in signals
+
+    async def test_hard_keeps_and_expiry_run_before_the_combiner(self):
+        combiner = self.combiner(0.99)
+        ai = AsyncMock()
+        keyword = make_email("6", "Important update", "boss@corp.example")
+        assert (
+            await classify_email(keyword, make_config(), None, ai, combiner)
+        ).decision == (Decision.KEEP)
+        code = make_email(
+            "7", "Your verification code is 123456", "no-reply@acct.example"
+        )
+        expired = await classify_email(code, make_config(), None, ai, combiner)
+        assert expired.reason == FilterReason.EXPIRED
+        combiner.decide.assert_not_called()
+
+    async def test_without_combiner_marketing_goes_to_ai(self):
+        # Unsubscribe footers also appear on bank alerts: never a delete alone
+        ai = AsyncMock(return_value=ai_keep(MESSAGES["1"]))
+        decision = await classify_email(MESSAGES["1"], make_config(), None, ai)
+        assert decision.decision == Decision.KEEP
+        ai.assert_awaited_once_with(MESSAGES["1"], "")
+
+
+def read_report(path: str) -> dict[str, dict]:
+    rows = map(json.loads, Path(path).read_text().splitlines())
+    return {r["uid"]: r for r in rows}
+
+
+def write_text(path: str, text: str) -> None:
+    Path(path).write_text(text)
+
+
+class TestSafeRunOptions(unittest.IsolatedAsyncioTestCase):
+    @patch("inbox_reaper.langgraph_streaming.classify_batch_with_ai")
+    @patch("inbox_reaper.langgraph_streaming.create_imap_client")
+    async def test_no_ai_keeps_undecided_and_reports(self, mock_create_client, mock_ai):
+        code = make_email("3", "Your verification code is 123456", "no-reply@x.example")
+        unsure = make_email("7", "Hello", "Robot <bot@service.example>", "Hi there")
+        mock_create_client.return_value = make_mock_client({"3": code, "7": unsure})
+        with tempfile.TemporaryDirectory() as tmp:
+            report = f"{tmp}/report.jsonl"
+            await run_streaming_pipeline(
+                make_config(dry_run=False, use_ai=False, report_path=report)
+            )
+            rows = read_report(report)
+        mock_ai.assert_not_called()
+        mock_create_client.return_value.delete_emails.assert_awaited_once_with(["3"])
+        assert rows["3"]["operation"] == "delete" and rows["3"]["reason"] == "expired"
+        assert rows["7"]["operation"] == "keep"
+        assert rows["7"]["reason"] == FilterReason.UNDECIDED
+
+    @patch("inbox_reaper.langgraph_streaming.create_imap_client")
+    async def test_only_uids_limits_what_can_be_deleted(self, mock_create_client):
+        old = [
+            make_email(u, "Your verification code is 1", "no-reply@x.example")
+            for u in ("3", "4")
+        ]
+        mock_create_client.return_value = make_mock_client({e.uid: e for e in old})
+        with tempfile.TemporaryDirectory() as tmp:
+            approved = f"{tmp}/approved.jsonl"
+            write_text(
+                approved,
+                '{"uid": "4", "operation": "delete"}\n'
+                '{"uid": "3", "operation": "keep"}\n',
+            )
+            await run_streaming_pipeline(
+                make_config(dry_run=False, use_ai=False, only_uids_path=approved)
+            )
+        # UID 3 would be deleted too, but only UID 4 was approved
+        mock_create_client.return_value.delete_emails.assert_awaited_once_with(["4"])

@@ -1,6 +1,14 @@
 """Tests for agent functions, specifically text processing utilities."""
 
-from inbox_reaper.agents import remove_base64_images, strip_html
+from datetime import datetime
+
+from inbox_reaper.agents import (
+    check_marketing_indicators,
+    check_whitelist,
+    remove_base64_images,
+    strip_html,
+)
+from inbox_reaper.state import Config, Email
 
 # Small 1x1 transparent PNG in base64
 TINY_PNG_B64 = (
@@ -218,39 +226,26 @@ class TestWhitelist:
 
     @staticmethod
     def _email(sender: str):
-        from datetime import datetime
-
-        from inbox_reaper.state import Email
 
         return Email(uid="1", subject="s", sender=sender, body="", date=datetime.now())
 
     def test_display_name_sender_matches(self):
-        from inbox_reaper.agents import check_whitelist
-        from inbox_reaper.state import Config
 
         config = Config(whitelist_domains=["bank.com"])
         assert check_whitelist(self._email("My Bank <alerts@bank.com>"), config)
 
     def test_subdomain_matches(self):
-        from inbox_reaper.agents import check_whitelist
-        from inbox_reaper.state import Config
 
         config = Config(whitelist_domains=["Bank.com"])
         assert check_whitelist(self._email("alerts@mail.bank.com"), config)
 
     def test_lookalike_domain_does_not_match(self):
-        from inbox_reaper.agents import check_whitelist
-        from inbox_reaper.state import Config
 
         config = Config(whitelist_domains=["bank.com"])
         assert check_whitelist(self._email("x@evilbank.com"), config) is None
 
 
 def test_list_unsubscribe_header_counts_as_marketing_signal():
-    from datetime import datetime
-
-    from inbox_reaper.agents import check_marketing_indicators
-    from inbox_reaper.state import Config, Email
 
     def make(has_header: bool) -> Email:
         return Email(

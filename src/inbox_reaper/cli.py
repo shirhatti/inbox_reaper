@@ -4,8 +4,10 @@ Provides a Click-based command-line interface for the email classification syste
 """
 
 import asyncio
+import base64
+import json
 import logging
-from datetime import datetime, timedelta
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -13,13 +15,17 @@ import click
 
 from . import credential_helper
 from .config_loader import load_config_file, merge_config_with_cli_args
+from .imap_client import AsyncIMAPClient
+from .mlx_backend import download_model as download_mlx_model
 from .oauth_config import detect_provider
 from .oauth_flow import (
     perform_oauth_flow,
     refresh_access_token,
+    refresh_if_expiring,
     verify_imap_connection,
 )
 from .state import Config
+from .timeutil import expiry_after, parse_timestamp, utcnow
 
 # Configure logging
 logging.basicConfig(
@@ -41,7 +47,9 @@ def cli():
     """
 
 
-def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
+def build_config(
+    config_path: str | None, cli_args: dict[str, Any], *, require_email: bool = True
+) -> Config:
     """Load the optional config file, overlay CLI args, and validate."""
     file_config = {}
     if config_path:
@@ -50,21 +58,21 @@ def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
             file_config = load_config_file(config_path)
         except Exception as e:
             click.echo(f"Error loading config file: {e}", err=True)
-            raise click.Abort() from e
+            raise click.Abort from e
 
     # Merge configurations (CLI args take precedence)
     merged_config = merge_config_with_cli_args(file_config, cli_args)
 
     # Validate required fields
-    if not merged_config.get("email"):
+    if require_email and not merged_config.get("email"):
         click.echo("Error: --email is required (or must be in config file)", err=True)
-        raise click.Abort()
+        raise click.Abort
 
     try:
         return Config(**merged_config)
     except Exception as e:
         click.echo(f"Error creating configuration: {e}", err=True)
-        raise click.Abort() from e
+        raise click.Abort from e
 
 
 @cli.command()
@@ -88,25 +96,12 @@ def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
     "--concurrent-limit",
     default=None,
     type=int,
-    help="Maximum concurrent AI classification requests",
+    help="Emails classified per batched AI call (default: 8)",
 )
 @click.option(
     "--dry-run/--no-dry-run",
     default=None,
     help="Enable dry-run mode (no actual deletions)",
-)
-@click.option(
-    "--checkpoint-path",
-    default="checkpoints.db",
-    type=click.Path(),
-    help="Path to SQLite checkpoint database for resumable processing",
-    show_default=True,
-)
-@click.option(
-    "--resume/--no-resume",
-    default=True,
-    help="Resume from checkpoint if available (default: ask user)",
-    show_default=True,
 )
 @click.option(
     "--email",
@@ -133,24 +128,61 @@ def build_config(config_path: str | None, cli_args: dict[str, Any]) -> Config:
     type=click.Path(exists=True, dir_okay=False),
     help="Rules file from 'inbox-reaper learn', applied before heuristics and AI",
 )
+@click.option(
+    "--combiner",
+    "combiner_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Combiner from 'inbox-reaper train': decides from the feature vector, "
+    "sending only contested emails to the AI",
+)
+@click.option(
+    "--history",
+    "history_path",
+    type=click.Path(dir_okay=False),
+    help="Mailbox history file for a combiner trained with one; created if "
+    "missing, then updated incrementally on each run",
+)
+@click.option(
+    "--ai/--no-ai",
+    "use_ai",
+    default=None,
+    help="--no-ai: keep whatever the filters and combiner do not confidently "
+    "decide, without loading the model",
+)
+@click.option(
+    "--only-uids",
+    "only_uids_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Process only these UIDs: one per line, or a --report file (its "
+    "delete rows), so a real run can only delete what you reviewed",
+)
+@click.option(
+    "--report",
+    "report_path",
+    type=click.Path(dir_okay=False),
+    help="Write every decision (uid, date, sender, subject, outcome) as JSONL",
+)
 def process(
     config: str | None,
     model: str | None,
     batch_size: int | None,
     concurrent_limit: int | None,
     dry_run: bool | None,
-    checkpoint_path: str,
-    resume: bool,
     email: str | None,
     max_emails: int | None,
     keywords: tuple,
     whitelist_domain: tuple,
     rules_path: str | None,
+    combiner_path: str | None,
+    history_path: str | None,
+    use_ai: bool | None,
+    only_uids_path: str | None,
+    report_path: str | None,
 ):
     """Process emails through the classification pipeline with LangGraph.
 
     This command runs the email classification pipeline using LangGraph for
-    orchestration, with support for checkpointing and resumable processing.
+    orchestration. Each run scans the whole inbox; there is no resume state.
 
     \b
     Example:
@@ -172,6 +204,11 @@ def process(
         "keywords": list(keywords) if keywords else None,
         "whitelist_domains": list(whitelist_domain) if whitelist_domain else None,
         "rules_path": rules_path,
+        "combiner_path": combiner_path,
+        "history_path": history_path,
+        "use_ai": use_ai,
+        "only_uids_path": only_uids_path,
+        "report_path": report_path,
     }
     config_obj = build_config(config, cli_args)
 
@@ -180,19 +217,22 @@ def process(
     click.echo(f"  Batch size: {config_obj.batch_size}")
     click.echo(f"  Concurrent limit: {config_obj.concurrent_ai_limit}")
     click.echo(f"  Dry run: {config_obj.dry_run}")
-    click.echo(f"  Checkpoint: {checkpoint_path}")
     click.echo(f"  Keywords: {config_obj.keywords or 'None'}")
     click.echo(f"  Whitelisted domains: {config_obj.whitelist_domains or 'None'}")
     click.echo(f"  Rules: {config_obj.rules_path or 'None'}")
+    click.echo(f"  Combiner: {config_obj.combiner_path or 'None'}")
+    click.echo(f"  History: {config_obj.history_path or 'None'}")
+    click.echo(f"  AI: {'on' if config_obj.use_ai else 'off'}")
+    if config_obj.only_uids_path:
+        click.echo(f"  Only UIDs from: {config_obj.only_uids_path}")
 
     # Run the LangGraph pipeline
     try:
         click.echo("\nStarting LangGraph pipeline execution (Streaming Mode)...")
         click.echo("-" * 60)
 
-        import asyncio
-
-        from .langgraph_streaming import run_streaming_pipeline
+        # Deferred: importing LangGraph takes ~2s, which would slow every command
+        from .langgraph_streaming import run_streaming_pipeline  # noqa: PLC0415
 
         asyncio.run(run_streaming_pipeline(config_obj))
 
@@ -270,9 +310,8 @@ def learn(
         inbox-reaper learn --email user@example.com -o rules.json
         inbox-reaper process --email user@example.com --rules rules.json
     """
-    import asyncio
-
-    from .langgraph_streaming import run_learning_pipeline
+    # Deferred: importing LangGraph takes ~2s, which would slow every command
+    from .langgraph_streaming import run_learning_pipeline  # noqa: PLC0415
 
     config_obj = build_config(
         config,
@@ -339,8 +378,6 @@ def download_model(model: str):
         inbox-reaper download-model
         inbox-reaper download-model --model mlx-community/Llama-3.2-1B-Instruct-4bit
     """
-    from .mlx_backend import download_model as download_mlx_model
-
     click.echo("Inbox Reaper - Model Download")
     click.echo("=" * 60)
     click.echo(f"\nModel: {model}")
@@ -398,9 +435,7 @@ def login(email: str, provider: str | None):
             "provider": provider,
             "access_token": tokens["access_token"],
             "refresh_token": tokens.get("refresh_token"),
-            "expires_at": (
-                datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
-            ).isoformat(),
+            "expires_at": expiry_after(tokens.get("expires_in", 3600)),
             "token_type": tokens.get("token_type", "Bearer"),
         }
 
@@ -425,18 +460,11 @@ def logout(email: str):
 
 
 @cli.command()
-@click.option(
-    "--verbose",
-    "-v",
-    is_flag=True,
-    help="Show detailed information including expiration status",
-)
-def accounts(verbose: bool):
+def accounts():
     """List all stored email accounts.
 
     Example:
         inbox-reaper accounts
-        inbox-reaper accounts --verbose
 
     Note:
         Due to limitations in the keyring library, this command cannot
@@ -470,20 +498,8 @@ def test(email: str):
 
     # Check if token expired and refresh if needed
     try:
-        expires_at_str = creds.get("expires_at")
-        if expires_at_str and isinstance(expires_at_str, str):
-            expires = datetime.fromisoformat(expires_at_str)
-            if expires < datetime.now():
-                click.echo("Token expired, refreshing...")
-                tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
-                creds["access_token"] = tokens["access_token"]
-                creds["expires_at"] = (
-                    datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
-                ).isoformat()
-                credential_helper.store_credentials(email, creds)
-                click.echo("✓ Token refreshed successfully")
-        else:
-            click.echo("Warning: Token expiration time missing or invalid", err=True)
+        if refresh_if_expiring(email, creds):
+            click.echo("✓ Token refreshed successfully")
     except Exception as e:
         click.echo(f"Warning: Could not refresh token: {e}", err=True)
 
@@ -520,7 +536,6 @@ def fetch_email(email, uid, output):
 
     This is a debug command to inspect specific emails.
     """
-    from .imap_client import AsyncIMAPClient
 
     async def _fetch():
         # Get credentials
@@ -535,15 +550,7 @@ def fetch_email(email, uid, output):
 
         # Check if token expired and refresh if needed
         try:
-            expires = datetime.fromisoformat(creds.get("expires_at", ""))
-            if expires < datetime.now():
-                click.echo("Token expired, refreshing...")
-                tokens = refresh_access_token(creds["refresh_token"], creds["provider"])
-                creds["access_token"] = tokens["access_token"]
-                creds["expires_at"] = (
-                    datetime.now() + timedelta(seconds=tokens.get("expires_in", 3600))
-                ).isoformat()
-                credential_helper.store_credentials(email, creds)
+            if refresh_if_expiring(email, creds):
                 click.echo("✓ Token refreshed successfully")
         except Exception as e:
             click.echo(f"Warning: Could not refresh token: {e}", err=True)
@@ -582,7 +589,9 @@ Date: {email_data["date"]}
                 output_path = output or f"email_{uid}.eml"
 
                 # Save to file
-                Path(output_path).write_text(eml_content, encoding="utf-8")
+                await asyncio.to_thread(
+                    Path(output_path).write_text, eml_content, encoding="utf-8"
+                )
 
                 click.echo(f"✓ Email saved to {output_path}")
                 click.echo(f"  Size: {len(eml_content)} bytes")
@@ -611,9 +620,6 @@ def diagnose(email: str, refresh: bool):
         inbox-reaper diagnose user@gmail.com
         inbox-reaper diagnose user@gmail.com --refresh
     """
-    import base64
-    import json
-
     # Get credentials
     creds = credential_helper.get_credentials(email)
     if not creds:
@@ -636,8 +642,8 @@ def diagnose(email: str, refresh: bool):
     if expires_at_str:
         if isinstance(expires_at_str, str):
             try:
-                expires_at = datetime.fromisoformat(expires_at_str)
-                now = datetime.now()
+                expires_at = parse_timestamp(expires_at_str)
+                now = utcnow()
                 if expires_at < now:
                     delta = now - expires_at
                     click.echo(f"Status: EXPIRED {delta} ago", err=True)
@@ -686,8 +692,8 @@ def diagnose(email: str, refresh: bool):
             # Check for expiration in JWT
             if "exp" in payload:
                 exp_timestamp = payload["exp"]
-                exp_dt = datetime.fromtimestamp(exp_timestamp)
-                now = datetime.now()
+                exp_dt = parse_timestamp(exp_timestamp)
+                now = utcnow()
                 click.echo(f"\nJWT exp claim: {exp_dt.isoformat()}")
                 if exp_dt < now:
                     delta = now - exp_dt
@@ -742,8 +748,7 @@ def diagnose(email: str, refresh: bool):
                 click.echo(
                     f"\n✓ expires_in present: {expires_in} seconds ({hours:.1f} hours)"
                 )
-                future_expiry = datetime.now() + timedelta(seconds=expires_in)
-                click.echo(f"  Would expire at: {future_expiry.isoformat()}")
+                click.echo(f"  Would expire at: {expiry_after(expires_in)}")
             else:
                 click.echo(
                     "\n✗ WARNING: expires_in NOT present in refresh response",
@@ -752,8 +757,6 @@ def diagnose(email: str, refresh: bool):
 
         except Exception as e:
             click.echo(f"\nError during token refresh: {e}", err=True)
-            import traceback
-
             click.echo(traceback.format_exc(), err=True)
 
 
@@ -764,3 +767,237 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+@cli.command()
+@click.option("--config", type=click.Path(exists=True), help="Configuration file")
+@click.option("--email", help="Email address to sample from")
+@click.option("-n", "count", default=200, show_default=True, help="Emails to sample")
+@click.option("--seed", default=0, show_default=True, help="Random seed")
+@click.option(
+    "--exclude",
+    "exclude_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Existing samples file whose emails should not be sampled again",
+)
+@click.option("-o", "--output", default="samples.jsonl", show_default=True)
+def sample(config, email, count, seed, exclude_path, output):
+    """Save a random sample of emails for labelling (read-only).
+
+    The samples file holds email contents; keep it private.
+
+    \b
+    Example:
+        inbox-reaper sample --email user@example.com -n 300 -o samples.jsonl
+    """
+    from .labeling import Sample, append_jsonl, load_samples  # noqa: PLC0415
+    from .langgraph_streaming import sample_inbox  # noqa: PLC0415
+
+    config_obj = build_config(config, {"email": email})
+    exclude = {s.uid for s in load_samples(exclude_path)} if exclude_path else set()
+    emails = asyncio.run(sample_inbox(config_obj, count, seed=seed, exclude=exclude))
+    sampled_at = utcnow()
+    for e in emails:
+        append_jsonl(output, Sample(uid=e.uid, sampled_at=sampled_at, email=e))
+    click.echo(f"Sampled {len(emails)} emails -> {output}")
+    click.echo(f"Next: inbox-reaper label {output}")
+
+
+@cli.command()
+@click.option("--config", type=click.Path(exists=True), help="Configuration file")
+@click.option("--email", help="Email address to read")
+@click.option("-o", "--output", default="history.json", show_default=True)
+@click.option("--full", is_flag=True, help="Rescan everything instead of updating")
+def history(config, email, output, full):
+    """Save your mailbox history for training and evaluation (read-only).
+
+    Records the sender, date and read/flagged state of every INBOX message
+    and who you have written to (from the Sent folder). Nothing is marked read
+    or changed. If OUTPUT exists it is updated: only new messages are fetched
+    and read state is refreshed. The file holds addresses from your mailbox;
+    keep it private.
+
+    \b
+    Example:
+        inbox-reaper history --email user@example.com -o history.json
+    """
+    from .langgraph_streaming import read_history  # noqa: PLC0415
+
+    config_obj = build_config(config, {"email": email, "history_path": output})
+    asyncio.run(read_history(config_obj, full=full))
+    click.echo(f"Saved -> {output}")
+
+
+@cli.command()
+@click.argument("samples_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("-o", "--output", default="labels.jsonl", show_default=True)
+@click.option("--labeler", default="human", show_default=True)
+@click.option(
+    "--prioritize",
+    "reference_paths",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Labels files (e.g. model labels) whose disagreements you label first",
+)
+@click.option("--limit", type=int, help="Stop after this many emails")
+def label(samples_path, output, labeler, reference_paths, limit):
+    """Label sampled emails along several dimensions, interactively.
+
+    For each email: keep or delete, how long it stays useful, a category, and
+    how bad it would be to lose it. Progress is saved after every email; run
+    again to resume. Other labellers' answers are never shown.
+
+    \b
+    Example:
+        inbox-reaper label samples.jsonl --prioritize model-labels.jsonl
+    """
+    from .labeling import label_interactively, load_labels, load_samples, review_order  # noqa: PLC0415
+
+    samples = load_samples(samples_path)
+    references = [load_labels(p) for p in reference_paths]
+    ordered = review_order(samples, references) if references else samples
+    count = label_interactively(ordered, output, labeler, limit)
+    click.echo(f"Labelled {count} emails -> {output}")
+
+
+@cli.command("compare-labels")
+@click.argument(
+    "label_paths", nargs=-1, required=True, type=click.Path(exists=True, dir_okay=False)
+)
+@click.option(
+    "--samples",
+    "samples_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Samples file, to show subjects of disagreements",
+)
+@click.option("--show", default=20, show_default=True, help="Disagreements to list")
+def compare_labels(label_paths, samples_path, show):
+    """Compare labellers: agreement per dimension and keep/delete disagreements."""
+    from .labeling import compare, disagreements, load_labels, load_samples  # noqa: PLC0415
+
+    sets = {Path(p).stem: load_labels(p) for p in label_paths}
+    for line in compare(sets):
+        click.echo(line)
+    samples = {s.uid: s for s in load_samples(samples_path)} if samples_path else {}
+    rows = list(disagreements(sets, samples))
+    click.echo(f"\n{len(rows)} keep/delete disagreements")
+    for row in rows[:show]:
+        click.echo(row)
+
+
+@cli.command("train")
+@click.argument("samples_path", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--labels",
+    "label_paths",
+    multiple=True,
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Labels files; when several label the same email, the first wins",
+)
+@click.option("--config", type=click.Path(exists=True), help="Configuration file")
+@click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--history",
+    "history_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Mailbox history from 'inbox-reaper history' (adds history features)",
+)
+@click.option("-o", "--output", default="combiner.json", show_default=True)
+def train_command(samples_path, label_paths, config, rules_path, history_path, output):
+    """Train the combiner from labelled samples.
+
+    Keep-labelled emails are weighted by how bad losing them would be. The
+    reported metrics are cross-validated. Use the result with
+    'inbox-reaper process --combiner'.
+    """
+    from .history import MailboxHistory  # noqa: PLC0415
+    from .labeling import load_labels, load_samples, train_combiner  # noqa: PLC0415
+    from .rules import RuleSet  # noqa: PLC0415
+
+    # Only filter settings (keywords, whitelist) matter here, not the account
+    config_obj = build_config(config, {}, require_email=False)
+    rules = RuleSet.load(rules_path) if rules_path else None
+    combiner = train_combiner(
+        load_samples(samples_path),
+        [load_labels(p) for p in label_paths],
+        config_obj,
+        rules,
+        MailboxHistory.load(history_path) if history_path else None,
+    )
+    combiner.save(output)
+    m = combiner.metrics
+    click.echo(
+        f"Trained on {combiner.trained_on} emails ({m['keep_examples']:.0f} keep, "
+        f"{m['delete_examples']:.0f} delete) -> {output}"
+    )
+    click.echo(
+        f"Cross-validated: {m['false_deletes']:.0f} keep-labelled emails would be "
+        f"deleted, {m['deletes_caught']:.0f}/{m['delete_examples']:.0f} deletable "
+        f"caught, {m['contested_share']:.0%} contested (sent to the AI)"
+    )
+    click.echo(
+        f"Thresholds: delete if P >= {combiner.delete_threshold:.2f}, "
+        f"keep if P <= {combiner.keep_threshold:.2f}"
+    )
+    click.echo("Strongest features:")
+    for name, weight in combiner.top_weights(8):
+        click.echo(f"  {weight:+.2f}  {name}")
+
+
+@cli.command("evaluate")
+@click.argument("samples_path", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--labels",
+    "label_paths",
+    multiple=True,
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Labels files; when several label the same email, the first wins",
+)
+@click.option("--config", type=click.Path(exists=True), help="Configuration file")
+@click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--combiner",
+    "combiner_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Also evaluate the pipeline with this combiner",
+)
+@click.option(
+    "--history",
+    "history_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Mailbox history from 'inbox-reaper history' (adds history features)",
+)
+@click.option("--show", default=15, show_default=True, help="Wrong deletes to list")
+def evaluate_command(
+    samples_path, label_paths, config, rules_path, combiner_path, history_path, show
+):
+    """Delete precision and recall of each deletion path on labelled mail.
+
+    Replays the deterministic stages (and the combiner) without running the
+    AI. Compare 'today' against '--combiner' before trusting a new model: a
+    wrong delete is the error that matters.
+    """
+    from .combiner import Combiner  # noqa: PLC0415
+    from .history import MailboxHistory  # noqa: PLC0415
+    from .labeling import evaluate, format_evaluation, load_labels, load_samples  # noqa: PLC0415
+    from .rules import RuleSet  # noqa: PLC0415
+
+    config_obj = build_config(config, {}, require_email=False)
+    rules = RuleSet.load(rules_path) if rules_path else None
+    samples = load_samples(samples_path)
+    labels = [load_labels(p) for p in label_paths]
+    history = MailboxHistory.load(history_path) if history_path else None
+    runs = [evaluate(samples, labels, config_obj, rules)]
+    if combiner_path:
+        combiner = Combiner.load(combiner_path)
+        if combiner.needs_history and history is None:
+            raise click.UsageError("this combiner needs --history")
+        runs.append(evaluate(samples, labels, config_obj, rules, combiner, history))
+    for ev in runs:
+        for line in format_evaluation(ev):
+            click.echo(line)
+        for row in ev.wrong[:show]:
+            click.echo(f"    wrong delete - {row}")
+        click.echo()

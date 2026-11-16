@@ -9,6 +9,7 @@ import pytest
 from inbox_reaper.langgraph_streaming import (
     classify_deterministic,
     run_learning_pipeline,
+    run_streaming_pipeline,
 )
 from inbox_reaper.rules import Rule, RuleLearner, RuleMatch, RuleSet
 from inbox_reaper.state import Config, Decision, Email, EmailDecision, FilterReason
@@ -154,15 +155,19 @@ class TestRuleApplication:
     def test_rules_apply_before_heuristics(self):
         rules = RuleSet(
             rules=[
-                Rule(match=RuleMatch.SENDER, value="news@shop.example", action="keep")
+                Rule(match=RuleMatch.SENDER, value="news@shop.example", action="delete")
             ]
         )
-        # The marketing heuristic alone would delete this email
-        email = make_email("news@shop.example", body="Unsubscribe here")
-        assert classify_deterministic(email, Config()).decision == Decision.DELETE
+        # The transactional heuristic alone would keep this email
+        email = make_email("news@shop.example", body="Order confirmed!")
+        assert classify_deterministic(email, Config()).decision == Decision.KEEP
         decision = classify_deterministic(email, Config(), rules)
-        assert decision.decision == Decision.KEEP
+        assert decision.decision == Decision.DELETE
         assert decision.reason == FilterReason.RULE
+
+    def test_marketing_indicators_never_delete_alone(self):
+        email = make_email("news@e.shop.example", body="Unsubscribe here")
+        assert classify_deterministic(email, Config()) is None
 
 
 class TestLearningPipeline:
@@ -179,11 +184,21 @@ class TestLearningPipeline:
         client.fetch_messages.side_effect = lambda uids: {u: messages[u] for u in uids}
         mock_create_client.return_value = client
 
-        rule_set = asyncio.run(
-            run_learning_pipeline(
-                Config(email="me@example.com", dry_run=False), use_ai=False
+        with patch(
+            "inbox_reaper.langgraph_streaming.classify_batch_with_ai",
+            side_effect=lambda emails, config, signals=None: [
+                EmailDecision(
+                    email=e,
+                    decision=Decision.DELETE,
+                    reason=FilterReason.AI_CLASSIFIED,
+                    confidence=0.9,
+                )
+                for e in emails
+            ],
+        ):
+            rule_set = asyncio.run(
+                run_learning_pipeline(Config(email="me@example.com", dry_run=False))
             )
-        )
 
         client.delete_emails.assert_not_called()
         assert rule_set.emails_observed == 6
@@ -197,7 +212,9 @@ class TestLearningPipeline:
         client.fetch_messages.return_value = {"1": make_email("x@corp.example")}
         mock_create_client.return_value = client
 
-        with patch("inbox_reaper.langgraph_streaming.classify_with_ai") as mock_ai:
+        with patch(
+            "inbox_reaper.langgraph_streaming.classify_batch_with_ai"
+        ) as mock_ai:
             rule_set = asyncio.run(
                 run_learning_pipeline(Config(email="me@example.com"), use_ai=False)
             )
@@ -206,10 +223,9 @@ class TestLearningPipeline:
 
 
 class TestProcessWithRules:
-    @patch("inbox_reaper.langgraph_streaming.classify_with_ai")
+    @patch("inbox_reaper.langgraph_streaming.classify_batch_with_ai")
     @patch("inbox_reaper.langgraph_streaming.create_imap_client")
     def test_rule_drives_delete(self, mock_create_client, mock_ai, tmp_path):
-        from inbox_reaper.langgraph_streaming import run_streaming_pipeline
 
         path = tmp_path / "rules.json"
         RuleSet(
@@ -230,7 +246,6 @@ class TestProcessWithRules:
 
     @patch("inbox_reaper.langgraph_streaming.create_imap_client")
     def test_bad_rules_file_fails_before_connecting(self, mock_create_client, tmp_path):
-        from inbox_reaper.langgraph_streaming import run_streaming_pipeline
 
         path = tmp_path / "rules.json"
         path.write_text("not json")

@@ -1,25 +1,23 @@
 """Agent functions for email classification.
 
-All agents are pure functions: ProcessingState -> ProcessingState
-Each agent processes emails in the current batch and adds decisions.
+Each check is a pure function (email, config) -> EmailDecision | None; the AI
+classifier is the one function with a side effect (MLX inference).
 """
 
 import json
 import logging
 import re
 from email.utils import parseaddr
-from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
 
-from .mlx_backend import generate_text
+from .mlx_backend import generate_text, generate_text_batch
 from .state import (
     Config,
     Decision,
     Email,
     EmailDecision,
     FilterReason,
-    SenderStats,
 )
 from .text_utils import (  # noqa: F401 - re-exported for callers/tests
     HTMLTextExtractor,
@@ -27,9 +25,6 @@ from .text_utils import (  # noqa: F401 - re-exported for callers/tests
     strip_html,
     truncate_symmetric,
 )
-
-if TYPE_CHECKING:
-    from .ui.events import EventEmitter
 
 
 class AIClassificationResponse(BaseModel):
@@ -49,6 +44,9 @@ class AIClassificationResponse(BaseModel):
 _AI_CLASSIFICATION_SCHEMA = AIClassificationResponse.model_json_schema()
 
 logger = logging.getLogger(__name__)
+
+# Generous buffer for models that add explanatory text around the JSON
+AI_MAX_TOKENS = 200
 
 # Deterministic filter patterns, compiled once rather than on every email
 _ORDER_NUMBER_RE = re.compile(r"(receipt|invoice|order|confirmation)\s*#?\s*\d+")
@@ -136,8 +134,8 @@ def check_whitelist(email: Email, config: Config) -> EmailDecision | None:
     # Matches the domain itself and any subdomain (alerts.bank.com for bank.com)
     if "@" in email.sender:
         domain = sender_domain(email.sender)
-        for whitelisted in config.whitelist_domains:
-            whitelisted = whitelisted.lower()
+        for entry in config.whitelist_domains:
+            whitelisted = entry.lower()
             if domain == whitelisted or domain.endswith("." + whitelisted):
                 return EmailDecision(
                     email=email,
@@ -145,23 +143,6 @@ def check_whitelist(email: Email, config: Config) -> EmailDecision | None:
                     reason=FilterReason.WHITELIST,
                     confidence=1.0,
                 )
-    return None
-
-
-def check_sender_pattern(
-    email: Email, sender_stats: SenderStats, config: Config
-) -> EmailDecision | None:
-    """Check if sender should be auto-deleted based on history.
-
-    Pure function that returns a DELETE decision if sender has pattern of marketing.
-    """
-    if sender_stats.should_auto_delete(config.auto_delete_threshold):
-        return EmailDecision(
-            email=email,
-            decision=Decision.DELETE,
-            reason=FilterReason.SENDER_PATTERN,
-            confidence=1.0,
-        )
     return None
 
 
@@ -275,22 +256,50 @@ def check_marketing_indicators(email: Email, config: Config) -> EmailDecision | 
     return None
 
 
-def classify_with_ai(
-    email: Email,
-    config: Config,
-    event_emitter: Optional["EventEmitter"] = None,
-) -> EmailDecision:
-    """Classify email using MLX LLM with structured JSON output.
+def parse_ai_response(response: str) -> AIClassificationResponse:
+    """Extract the classification JSON from a model response.
 
-    This is the only non-pure function (has side effect of calling MLX).
-    Returns DELETE decision for marketing, KEEP for everything else.
-    The model returns both classification and confidence score.
+    Tolerates markdown code fences and text around the JSON object.
+
+    Raises:
+        ValueError: If no valid classification JSON is present
     """
+    response_text = response.strip()
+
+    # Remove markdown code fences if present (```json ... ``` or ``` ... ```)
+    if response_text.startswith("```"):
+        # Drop the opening fence line (if any), then the closing fence
+        _, newline, rest = response_text.partition("\n")
+        if newline:
+            response_text = rest
+        response_text = response_text.removesuffix("```").strip()
+
+    # Find JSON object in response (handles cases where model adds text)
+    json_start = response_text.find("{")
+    json_end = response_text.rfind("}") + 1
+    if json_start == -1 or json_end <= json_start:
+        msg = (
+            f"No valid JSON in response. "
+            f"Response length: {len(response_text)}, "
+            f"First 200 chars: '{response_text[:200]}'"
+        )
+        raise ValueError(msg)
+
+    return AIClassificationResponse(**json.loads(response_text[json_start:json_end]))
+
+
+def ai_messages(email: Email, signals: str = "") -> list[dict[str, str]]:
+    """Chat messages asking the model to classify ``email``.
+
+    ``signals`` is a short summary of what the automated checks found (see
+    :func:`inbox_reaper.features.describe_features`); it is shown as context.
+    """
+    signal_line = f"Automated checks: {signals}\n\n" if signals else ""
     # Strip HTML and truncate symmetrically to preserve footer (unsubscribe links, etc.)
     body_preview = truncate_symmetric(email.body)
 
     # Use chat template for better JSON compliance with instruct models
-    messages = [
+    return [
         {
             "role": "system",
             "content": (
@@ -319,87 +328,97 @@ Subject: {email.subject}
 From: {email.sender}
 Body: {body_preview}
 
-Analyze whether this is marketing/promotional that can be safely deleted.
+{signal_line}Analyze whether this is marketing/promotional that can be safely deleted.
 Output format: {{"is_marketing": true, "confidence": 0.95}}""",
         },
     ]
 
+
+def _ai_keep(email: Email) -> EmailDecision:
+    """Safe default when the model fails or its output can't be parsed."""
+    return EmailDecision(
+        email=email,
+        decision=Decision.KEEP,
+        reason=FilterReason.AI_CLASSIFIED,
+        confidence=0.0,
+    )
+
+
+def ai_decision(email: Email, response: str, config: Config) -> EmailDecision:
+    """Turn a model response into a decision; unparseable output keeps."""
     try:
-        # Use MLX for inference with chat template
+        classification = parse_ai_response(response)
+    except Exception as e:
+        # Malformed model output is expected occasionally; log without traceback
+        logger.error(  # noqa: TRY400
+            "MLX classification failed for email %s: %s", email.uid, e
+        )
+        return _ai_keep(email)
+
+    # Only delete if marked as marketing AND confidence >= threshold
+    # Otherwise, keep (safe default for low confidence)
+    if (
+        classification.is_marketing
+        and classification.confidence >= config.ai_confidence_threshold
+    ):
+        decision = Decision.DELETE
+    else:
+        decision = Decision.KEEP
+
+    return EmailDecision(
+        email=email,
+        decision=decision,
+        reason=FilterReason.AI_CLASSIFIED,
+        confidence=classification.confidence,
+    )
+
+
+def classify_with_ai(email: Email, config: Config, signals: str = "") -> EmailDecision:
+    """Classify one email with the MLX model; KEEP on any failure."""
+    try:
         response = generate_text(
             model_name=config.model_name,
-            messages=messages,
-            max_tokens=200,  # Generous buffer for models that add explanatory text
-            event_emitter=event_emitter,
+            messages=ai_messages(email, signals),
+            max_tokens=AI_MAX_TOKENS,
         )
-
-        # Parse JSON response
-        # Try to extract JSON from response (in case model adds extra text or markdown)
-        response_text = response.strip()
-
-        # Remove markdown code fences if present (```json ... ``` or ``` ... ```)
-        if response_text.startswith("```"):
-            # Find the end of opening fence
-            first_newline = response_text.find("\n")
-            if first_newline != -1:
-                # Remove opening fence
-                response_text = response_text[first_newline + 1 :]
-            # Remove closing fence
-            response_text = response_text.removesuffix("```")
-            response_text = response_text.strip()
-
-        # Find JSON object in response (handles cases where model adds text)
-        json_start = response_text.find("{")
-        json_end = response_text.rfind("}") + 1
-
-        if json_start != -1 and json_end > json_start:
-            json_text = response_text[json_start:json_end]
-            parsed = json.loads(json_text)
-            classification = AIClassificationResponse(**parsed)
-
-            # Only delete if marked as marketing AND confidence >= threshold
-            # Otherwise, keep (safe default for low confidence)
-            if (
-                classification.is_marketing
-                and classification.confidence >= config.ai_confidence_threshold
-            ):
-                decision = Decision.DELETE
-            else:
-                decision = Decision.KEEP
-
-            return EmailDecision(
-                email=email,
-                decision=decision,
-                reason=FilterReason.AI_CLASSIFIED,
-                confidence=classification.confidence,
-            )
-        # No valid JSON found
-        raise ValueError(
-            f"No valid JSON in response. "
-            f"Response length: {len(response_text)}, "
-            f"First 200 chars: '{response_text[:200]}'"
-        )
-
     except Exception as e:
-        # On error, default to KEEP (safe default)
-        error_msg = f"MLX classification failed for email {email.uid}: {e}"
-
-        if event_emitter:
-            from .ui.events import EventType
-
-            event_emitter.emit(
-                EventType.PROCESSING_ERROR,
-                error_msg,
-                email_uid=email.uid,
-                error=str(e),
-            )
-        else:
-            # Malformed model output is expected occasionally; no traceback
-            logger.error(error_msg)  # noqa: TRY400
-
-        return EmailDecision(
-            email=email,
-            decision=Decision.KEEP,
-            reason=FilterReason.AI_CLASSIFIED,
-            confidence=0.0,
+        logger.error(  # noqa: TRY400
+            "MLX classification failed for email %s: %s", email.uid, e
         )
+        return _ai_keep(email)
+    return ai_decision(email, response, config)
+
+
+def classify_batch_with_ai(
+    emails: list[Email], config: Config, signals: list[str] | None = None
+) -> list[EmailDecision]:
+    """Classify several emails in one batched MLX call, in input order.
+
+    Batching amortizes decoding across emails. If the whole call fails every
+    email is kept; a single unparseable response keeps just that email.
+    """
+    if not emails:
+        return []
+    if len(emails) == 1:
+        # Plain generation is ~10% faster than a batch of one
+        return [classify_with_ai(emails[0], config, signals[0] if signals else "")]
+    try:
+        responses = generate_text_batch(
+            model_name=config.model_name,
+            messages_list=[
+                ai_messages(email, sig)
+                for email, sig in zip(
+                    emails, signals or [""] * len(emails), strict=True
+                )
+            ],
+            max_tokens=AI_MAX_TOKENS,
+        )
+    except Exception as e:
+        logger.error(  # noqa: TRY400
+            "MLX batch classification failed for %s emails: %s", len(emails), e
+        )
+        return [_ai_keep(email) for email in emails]
+    return [
+        ai_decision(email, response, config)
+        for email, response in zip(emails, responses, strict=True)
+    ]

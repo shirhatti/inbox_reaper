@@ -65,7 +65,7 @@ class BatchCoordinator:
 
         try:
             await self.processor(items_to_process)
-        except Exception as e:
-            logger.exception(f"Error processing batch: {e}")
+        except Exception:
+            logger.exception("Error processing batch")
             # In a real system, we might want to retry or handle partial failures
             # For now, we just log the error

@@ -211,3 +211,10 @@ __marimo__/
 checkpoints.db
 quarantine.db
 sender_stats.db
+
+# Private mailbox data (email contents, addresses, labels)
+samples*.jsonl
+labels*.jsonl
+review*.jsonl
+history*.json
+report*.jsonl

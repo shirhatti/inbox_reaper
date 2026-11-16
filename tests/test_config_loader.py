@@ -402,11 +402,8 @@ class TestMergeConfigWithCliArgs:
             "max_emails": None,
             "keywords": ["file-keyword"],
             "whitelist_domains": ["file.com"],
-            "auto_delete_threshold": 5,
             "fetch_size": 100,
             "important_extensions": [".pdf", ".doc"],
-            "enable_pipelining": True,
-            "enable_sender_tracking": True,
         }
         cli_args = {
             "email": None,  # Should keep file value
@@ -428,4 +425,4 @@ class TestMergeConfigWithCliArgs:
         assert merged["keywords"] == ["cli-keyword"]  # Overridden
         assert merged["whitelist_domains"] == ["file.com"]  # Not in CLI, kept
         assert merged["ollama_base_url"] == "http://file:11434"  # Not in CLI
-        assert merged["auto_delete_threshold"] == 5  # Not in CLI
+        assert merged["fetch_size"] == 100  # Not in CLI

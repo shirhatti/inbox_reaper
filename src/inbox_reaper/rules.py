@@ -18,6 +18,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .state import Decision, Email, EmailDecision, FilterReason
+from .timeutil import utcnow
 
 RULES_FILE_VERSION = 1
 
@@ -83,13 +84,13 @@ class RuleSet(BaseModel):
 
     version: int = RULES_FILE_VERSION
     account: str = ""
-    generated_at: datetime = Field(default_factory=datetime.now)
+    generated_at: datetime = Field(default_factory=utcnow)
     emails_observed: int = 0
     min_support: int = 0
     min_agreement: float = 0.0
     rules: list[Rule] = Field(default_factory=list)
 
-    def model_post_init(self, __context: object) -> None:
+    def model_post_init(self, context: object, /) -> None:
         self._senders = {
             r.value.lower(): r for r in self.rules if r.match == RuleMatch.SENDER
         }
