@@ -249,6 +249,89 @@ def process(
 
 
 @cli.command()
+@click.option("--config", type=click.Path(exists=True), help="Configuration file")
+@click.option("--email", help="Email address to clean")
+@click.option(
+    "--combiner",
+    "combiner_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Combiner from 'inbox-reaper train' (without one, only expired codes "
+    "are proposed)",
+)
+@click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--history",
+    "history_path",
+    type=click.Path(dir_okay=False),
+    help="Mailbox history, if the combiner was trained with one",
+)
+@click.option(
+    "--ai/--no-ai",
+    "use_ai",
+    default=False,
+    show_default=True,
+    help="Let the AI propose deletes for emails nothing else decides",
+)
+@click.option(
+    "--batch-size",
+    default=2000,
+    show_default=True,
+    type=click.IntRange(1, 10000),
+    help="Default emails per batch (changeable on the page)",
+)
+@click.option(
+    "--port", default=0, type=int, help="Port on 127.0.0.1 (default: any free)"
+)
+@click.option(
+    "--state-dir",
+    type=click.Path(file_okay=False),
+    help="Where batch reports are kept (default: ~/.inbox-reaper/<email>/review)",
+)
+@click.option("--no-browser", is_flag=True, help="Don't open the page automatically")
+def serve(
+    config,
+    email,
+    combiner_path,
+    rules_path,
+    history_path,
+    use_ai,
+    batch_size,
+    port,
+    state_dir,
+    no_browser,
+):
+    """Review and delete in batches from a web page on this machine.
+
+    Start a batch (a dry run that changes nothing), mark each proposed delete
+    Delete or Don't delete on the page, then delete exactly what you marked.
+    The page shows progress across batches; stop and resume any time.
+
+    \b
+    Example:
+        inbox-reaper serve --config config.json --combiner combiner.json
+    """
+    from .review_app import serve as run_server  # noqa: PLC0415
+
+    config_obj = build_config(
+        config,
+        {
+            "email": email,
+            "combiner_path": combiner_path,
+            "rules_path": rules_path,
+            "history_path": history_path,
+            "use_ai": use_ai,
+        },
+    )
+    run_server(
+        config_obj,
+        state_dir=Path(state_dir) if state_dir else None,
+        port=port,
+        batch_size=batch_size,
+        open_browser=not no_browser,
+    )
+
+
+@cli.command()
 @click.option(
     "--config",
     type=click.Path(exists=True),

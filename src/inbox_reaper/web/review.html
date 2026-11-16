@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Data comes only from the local review server (connect-src 'self').
+     Scripts only from the two pinned, integrity-checked CDN files below. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'self'; form-action 'none'; base-uri 'none'">
+<title>Inbox Reaper Review</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"
+        integrity="sha384-CjloA8y00+1SDAUkjs099PVfnY2KmDC2BZnws9kh8D/lX1s46w6EPhpXdqMfjK6i"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-sankey@0.12.3/dist/d3-sankey.min.js"
+        integrity="sha384-SM54CE5h+qdDI046d2Y5ym7wq1kq4uxcQ1cqGq5/+5jrE5tPLeDJSq711Q8sIska"
+        crossorigin="anonymous"></script>
+<style>
+:root {
+  --bg: #f6f6f3; --surface: #fcfcfb; --surface-2: #f0efea;
+  --ink: #0b0b0b; --ink-2: #4a4a46; --ink-3: #7a7a74;
+  --line: #e1e0d9; --line-2: #c3c2b7;
+  --keep: #b9b8ae; --keep-link: rgba(120,120,110,0.18);
+  --low: #0ca30c; --med: #fab219; --high: #d03b3b;
+  --approved: #1f5fbf; --excluded: #7a7a74;
+  --focus: #1f5fbf;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121211; --surface: #1a1a19; --surface-2: #232321;
+    --ink: #f2f2ee; --ink-2: #c4c4bd; --ink-3: #8e8e87;
+    --line: #2c2c2a; --line-2: #383835;
+    --keep: #55554f; --keep-link: rgba(200,200,190,0.12);
+    --approved: #6aa0ff; --excluded: #8e8e87; --focus: #6aa0ff;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121211; --surface: #1a1a19; --surface-2: #232321;
+  --ink: #f2f2ee; --ink-2: #c4c4bd; --ink-3: #8e8e87;
+  --line: #2c2c2a; --line-2: #383835;
+  --keep: #55554f; --keep-link: rgba(200,200,190,0.12);
+  --approved: #6aa0ff; --excluded: #8e8e87; --focus: #6aa0ff;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; }
+header.top { position: sticky; top: 0; z-index: 5; background: var(--surface);
+  border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; gap: 16px;
+  align-items: center; flex-wrap: wrap; }
+h1 { font-size: 16px; margin: 0; font-weight: 650; }
+.muted { color: var(--ink-3); }
+.small { font-size: 12px; }
+main { max-width: 1280px; margin: 0 auto; padding: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+button, .btn { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); }
+button:hover { background: var(--surface-2); }
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+button.primary { background: var(--approved); border-color: var(--approved); color: #fff; }
+button.primary:hover, button.danger:hover { filter: brightness(1.08); }
+button.danger { background: var(--high); border-color: var(--high); color: #fff; font-weight: 600; }
+.banner { border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; border: 1px solid var(--line); background: var(--surface); }
+.banner.ok { box-shadow: inset 4px 0 0 var(--low); } .banner.err { box-shadow: inset 4px 0 0 var(--high); }
+.banner.busy { box-shadow: inset 4px 0 0 var(--med); }
+table.hist { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.hist th, table.hist td { text-align: left; padding: 5px 6px; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+table.hist th { color: var(--ink-3); font-weight: 600; border-top: 0; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+input[type=number] { font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 7px; width: 7em;
+  border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.on-approve[aria-pressed="true"] { background: var(--approved); border-color: var(--approved); color: #fff; }
+button.on-exclude[aria-pressed="true"] { background: var(--excluded); border-color: var(--excluded); color: #fff; }
+input[type=search], select { font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 7px;
+  border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); }
+.stats { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-left: auto; }
+.stat b { font-variant-numeric: tabular-nums; }
+.bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--surface-2); min-width: 120px; }
+.bar > span { display: block; height: 100%; }
+.bar .a { background: var(--approved); } .bar .x { background: var(--excluded); }
+#drop { border: 2px dashed var(--line-2); border-radius: 12px; padding: 40px 16px; text-align: center; }
+#drop.over { border-color: var(--focus); background: var(--surface-2); }
+#sankey-wrap { width: 100%; overflow-x: auto; }
+#sankey text { fill: var(--ink); font-size: 12px; pointer-events: none; }
+#sankey .node rect.body { cursor: pointer; }
+#sankey .node.sel rect.body, #sankey path.sel { stroke: var(--ink); stroke-width: 2; }
+#sankey path.link { cursor: pointer; fill: none; }
+#sankey path.link:hover { stroke-opacity: .55 !important; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin-top: 6px; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
+.tier { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
+.tier::before { content: ""; width: 9px; height: 9px; border-radius: 2px; background: var(--c); }
+.tier.High { --c: var(--high); } .tier.Medium { --c: var(--med); } .tier.Low { --c: var(--low); }
+.panel-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.crumb { font-weight: 650; font-size: 15px; }
+.controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0 12px; }
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 7px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; border-right: 1px solid var(--line-2); }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--surface-2); font-weight: 650; }
+details.group { border-top: 1px solid var(--line); }
+details.group > summary { list-style: none; display: grid; grid-template-columns: 16px minmax(0,1fr) auto; gap: 8px;
+  align-items: center; padding: 8px 2px; cursor: pointer; }
+details.group > summary::-webkit-details-marker { display: none; }
+.caret { transition: transform .15s; color: var(--ink-3); }
+details[open] .caret { transform: rotate(90deg); }
+.gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gmeta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.gmeta .bar { width: 80px; min-width: 80px; }
+table.emails { width: 100%; border-collapse: collapse; margin: 0 0 10px; font-size: 13px; }
+table.emails td { padding: 5px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+table.emails td.num { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink-2); }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+.chip { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--surface-2); color: var(--ink-2); white-space: nowrap; }
+.chip.up { box-shadow: inset 2px 0 0 var(--high); } .chip.down { box-shadow: inset 2px 0 0 var(--low); }
+.state-btns { display: inline-flex; gap: 4px; white-space: nowrap; }
+.state-btns button { padding: 2px 8px; font-size: 12px; }
+.hidden { display: none !important; }
+.note { font-size: 12px; color: var(--ink-2); }
+details.rules summary { cursor: pointer; color: var(--ink-2); font-size: 13px; }
+details.rules ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink-2); }
+@media (max-width: 700px) {
+  .stats { margin-left: 0; }
+  table.emails td.hide-sm { display: none; }
+  details.group > summary { grid-template-columns: 16px minmax(0,1fr); }
+  .gmeta { grid-column: 2; justify-content: flex-start; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Inbox Reaper</h1>
+  <span id="account" class="muted small"></span>
+  <span id="fname" class="muted small"></span>
+  <div class="stats hidden" id="stats">
+    <span class="stat">Proposed <b id="s-total">0</b></span>
+    <span class="stat" style="color:var(--approved)">Delete <b id="s-a">0</b></span>
+    <span class="stat muted">Don't delete <b id="s-x">0</b></span>
+    <span class="stat">Undecided (kept) <b id="s-u">0</b></span>
+    <div class="bar" id="s-bar" title="delete / don't delete / undecided"><span class="a"></span><span class="x"></span></div>
+    <button class="danger" id="delete-btn" disabled>Delete 0 emails</button>
+    <button id="discard-btn" title="Drop this batch without deleting anything; its emails are offered again next time">Discard batch</button>
+  </div>
+</header>
+<main>
+  <div id="banner" class="banner hidden" role="status" aria-live="polite"></div>
+  <section class="card" id="start-card">
+    <div class="row">
+      <b>Next batch</b>
+      <label class="small">Emails <input type="number" id="batch-size" min="1" max="10000" step="100"></label>
+      <button class="primary" id="start-btn">Start dry run</button>
+      <span class="muted small" id="start-note"></span>
+    </div>
+    <p class="muted small" style="margin:8px 0 0">A dry run changes nothing in your mailbox. It proposes deletes for the next
+      unreviewed emails (oldest first); you then mark each one <b>Delete</b> or <b>Don't delete</b>. Anything undecided is kept.
+      Deletes are permanent.</p>
+  </section>
+  <section class="card" id="history-card">
+    <div class="row"><b>Batches</b><span class="muted small" id="totals"></span></div>
+    <div style="overflow-x:auto"><table class="hist"><thead><tr><th>#</th><th>UIDs</th><th>Status</th><th>Emails</th><th>Proposed</th><th>Marked</th><th>Deleted</th><th>Finished</th></tr></thead>
+      <tbody id="history"></tbody></table></div>
+  </section>
+
+  <section class="card hidden" id="flow-card">
+    <div class="panel-head">
+      <div class="crumb">Flow</div>
+      <span class="muted small">Click a box or a band to review that slice below. The thin bar beside a box shows its share marked Delete (blue) and Don't delete (gray). Anything undecided is kept.</span>
+      <label class="small" style="margin-left:auto"><input type="checkbox" id="show-keeps"> Show kept emails</label>
+    </div>
+    <div id="sankey-wrap"><svg id="sankey" role="img" aria-label="Flow of emails from batch to keep or delete, reason, risk tier and category"></svg></div>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--keep)"></span>Kept (never deleted)</span>
+      <span class="tier High">High risk</span><span class="tier Medium">Medium risk</span><span class="tier Low">Low risk</span>
+      <span><span class="sw" style="background:var(--approved)"></span>Delete</span>
+      <span><span class="sw" style="background:var(--excluded)"></span>Don't delete</span>
+    </div>
+    <details class="rules" style="margin-top:8px">
+      <summary>How risk tiers are computed</summary>
+      <ul id="rules-list"></ul>
+      <p class="note" id="rules-src"></p>
+    </details>
+  </section>
+
+  <section class="card hidden" id="panel">
+    <div class="panel-head">
+      <div class="crumb" id="crumb">All proposed deletes</div>
+      <span class="muted small" id="crumb-count"></span>
+      <div style="margin-left:auto; display:flex; gap:6px; flex-wrap:wrap" id="bulk"></div>
+    </div>
+    <div class="controls">
+      <span class="small muted">Group by</span>
+      <div class="seg" id="groupby"></div>
+      <span class="small muted">Show</span>
+      <div class="seg" id="showstate"></div>
+      <input type="search" id="q" placeholder="Filter sender or subject" aria-label="Filter sender or subject">
+    </div>
+    <div id="groups"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+// ---------- tiny DOM helper (textContent only: email text is never parsed as HTML) ----------
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "style") el.style.cssText = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
+  return el;
+}
+const $ = (id) => document.getElementById(id);
+
+// ---------- classification helpers ----------
+const CAT_RULES = [
+  ["security", /password|sign[- ]?in|log[- ]?in|verif|security|\bcode\b|2fa|two-factor|authenticat|new device/i],
+  ["financial", /statement|payment|bank|invoice|receipt|\btax|1099|w-?2|deposit|transfer|refund|balance|transaction|autopay|billing|credit|loan/i],
+  ["records", /reservation|itinerary|ticket|booking|appointment|insurance|policy|claim|lease|contract|offer letter|medical|prescription/i],
+  ["orders", /order|shipped|deliver|package|tracking|return/i],
+  ["social", /comment|liked|connection|mention|tagged|follower|notification|invited you|shared/i],
+  ["promotions", /% off|sale\b|deal|free shipping|exclusive|save |discount|coupon|last chance|new arrivals|picks/i],
+];
+const SENSITIVE = new Set(["financial", "security", "records"]);
+const AUTOMATED = /no-?reply|news|notif|alert|info|hello|orders?|marketing|mail(er)?|updates?|bookings?|support|team|digest|promo|account|service/i;
+const TIERS = ["High", "Medium", "Low"];
+const DAY = 86400000;
+
+function inferCategory(subject) {
+  for (const [c, re] of CAT_RULES) if (re.test(subject)) return c;
+  return "other";
+}
+function parseSender(s) {
+  const m = /^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/.exec(s || "");
+  const addr = (m ? m[2] : s || "").trim().toLowerCase();
+  const name = m && m[1].trim() ? m[1].trim() : addr;
+  return { addr: addr || "(no sender)", name };
+}
+const logit = (p) => Math.log(p / (1 - p));
+function fmtAge(d) { return d < 1 ? `${Math.round(d * 24)}h` : d < 60 ? `${Math.round(d)}d` : d < 730 ? `${Math.round(d / 30.4)}mo` : `${(d / 365.25).toFixed(1)}y`; }
+
+// Risk: transparent additive points; each point carries its reason (shown as a chip).
+function scoreRisk(r, ctx) {
+  const pts = [];
+  if (r.reason === "expired") pts.push([-2, "expired one-time code"]);
+  else if (SENSITIVE.has(r.category)) pts.push([2, `${r.category} category`]);
+  if (r.ageDays < 365) pts.push([2, "under a year old"]);
+  else if (r.ageDays < 3 * 365) pts.push([1, "under 3 years old"]);
+  else if (r.ageDays >= 5 * 365) pts.push([-1, "over 5 years old"]);
+  if (ctx.senderDeletes.get(r.senderAddr) === 1 && r.reason !== "expired") pts.push([1, "only delete from this sender"]);
+  const local = r.senderAddr.split("@")[0] || "";
+  if (!AUTOMATED.test(local) && /[a-z]+[._][a-z]+/.test(local)) pts.push([1, "address looks like a person"]);
+  if (r.sender_replied === true) pts.push([3, "you've written to this sender"]);
+  if (r.sender_received >= 3 && r.sender_opened / r.sender_received >= 0.5) pts.push([1, "you open most of their mail"]);
+  if (typeof r.p === "number" && typeof r.delete_threshold === "number" && r.reason === "combiner"
+      && r.p < 1 && logit(r.p) - logit(r.delete_threshold) < 0.5) pts.push([1, "barely cleared the delete threshold"]);
+  const score = pts.reduce((s, [v]) => s + v, 0);
+  return { score, pts, tier: score >= 3 ? "High" : score >= 1 ? "Medium" : "Low" };
+}
+
+// ---------- state ----------
+let rows = [], dels = [], byUid = new Map(), decisions = new Map(), storeKey = null, hasExt = {};
+let selection = { label: "All proposed deletes", items: null, key: "op:delete" };
+let groupBy = "sender", showState = "all";
+
+function load(text, name) {
+  const parsed = [];
+  let bad = 0;
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) continue;
+    try { const o = JSON.parse(t); if (o && o.uid != null && o.operation) parsed.push(o); else bad++; } catch { bad++; }
+  }
+  if (!parsed.length) { alert("No report rows found. Expected one JSON object per line with uid and operation."); return; }
+  const now = Date.now();
+  hasExt = { p: parsed.some((r) => typeof r.p === "number"), category: parsed.some((r) => r.category),
+             history: parsed.some((r) => "sender_replied" in r) };
+  rows = parsed.map((o) => {
+    const s = parseSender(o.sender);
+    const d = Date.parse(o.date);
+    return Object.assign({}, o, {
+      uid: String(o.uid), senderAddr: s.addr, senderName: s.name,
+      ageDays: isNaN(d) ? 99999 : Math.max(0, (now - d) / DAY),
+      category: o.category || inferCategory(o.subject || ""), catInferred: !o.category,
+    });
+  });
+  dels = rows.filter((r) => r.operation === "delete");
+  const senderDeletes = d3.rollup(dels, (v) => v.length, (r) => r.senderAddr);
+  for (const r of dels) r.risk = scoreRisk(r, { senderDeletes });
+  for (const r of dels) r.tier = r.risk.tier;
+  byUid = new Map(rows.map((r) => [r.uid, r]));
+  // Review state is kept per report (keyed by size and UID range) in this browser only.
+  storeKey = `reaper-review:${BOOT.email}:batch:${name}`;
+  decisions = new Map();
+  try { const saved = JSON.parse(localStorage.getItem(storeKey) || "{}");
+        for (const [u, v] of Object.entries(saved)) if (byUid.get(u)?.operation === "delete") decisions.set(u, v); } catch {}
+  $("fname").textContent = `Batch ${name} · ${rows.length} emails${bad ? ` · ${bad} unreadable lines skipped` : ""}`;
+  for (const id of ["flow-card", "panel", "stats"]) $(id).classList.remove("hidden");
+  renderRules();
+  renderSankey(); renderStats();
+  select({ label: "All proposed deletes", items: dels, key: "op:delete" });
+}
+
+function persist() { try { localStorage.setItem(storeKey, JSON.stringify(Object.fromEntries(decisions))); } catch {} }
+function stateOf(uid) { return decisions.get(uid) || "u"; }
+// Approve never overrides an explicit exclusion; exclusions are sticky until reset.
+function setMany(items, v, { skipTier } = {}) {
+  for (const r of items) {
+    if (r.operation !== "delete") continue;
+    if (skipTier && r.tier === skipTier) continue;
+    if (v === "a" && decisions.get(r.uid) === "x") continue;
+    if (v === "u") decisions.delete(r.uid); else decisions.set(r.uid, v);
+  }
+  persist(); refresh();
+}
+function setOne(uid, v) {
+  if (decisions.get(uid) === v || v === "u") decisions.delete(uid); else decisions.set(uid, v);
+  persist(); refresh();
+}
+function counts(items) {
+  let a = 0, x = 0, n = 0;
+  for (const r of items) if (r.operation === "delete") { n++; const s = stateOf(r.uid); if (s === "a") a++; else if (s === "x") x++; }
+  return { n, a, x, u: n - a - x };
+}
+function fillBar(bar, c) {
+  const [a, x] = bar.children;
+  a.style.width = c.n ? `${(100 * c.a) / c.n}%` : "0"; x.style.width = c.n ? `${(100 * c.x) / c.n}%` : "0";
+}
+function approvedUids() {
+  return dels.filter((r) => stateOf(r.uid) === "a").map((r) => r.uid).sort((p, q) => Number(p) - Number(q) || p.localeCompare(q));
+}
+
+// ---------- sankey ----------
+const ORDER = ["all", "op:keep", "op:delete"];
+function buildGraph() {
+  const nodes = new Map(), links = new Map();
+  const node = (id, name, kind, extra) => { if (!nodes.has(id)) nodes.set(id, Object.assign({ id, name, kind, items: [] }, extra)); return nodes.get(id); };
+  const link = (s, t, r) => { const k = `${s}→${t}`; if (!links.has(k)) links.set(k, { key: k, source: s, target: t, items: [] }); links.get(k).items.push(r); };
+  const showKeeps = $("show-keeps").checked;
+  for (const r of rows) {
+    const path = ["all"];
+    if (!showKeeps && r.operation === "keep") continue;
+    node("all", showKeeps ? "Batch" : `Batch (${rows.length - dels.length} kept, hidden)`, "all").items.push(r);
+    if (r.operation === "keep") {
+      node("op:keep", "Keep", "keep").items.push(r);
+      node(`k:${r.reason}`, `keep: ${r.reason}`, "keep").items.push(r);
+      path.push("op:keep", `k:${r.reason}`);
+    } else {
+      node("op:delete", "Delete", "del").items.push(r);
+      node(`d:${r.reason}`, `delete: ${r.reason}`, "del").items.push(r);
+      node(`t:${r.tier}`, `${r.tier} risk`, "tier", { tier: r.tier }).items.push(r);
+      node(`c:${r.category}`, r.category + (r.catInferred ? "*" : ""), "cat").items.push(r);
+      path.push("op:delete", `d:${r.reason}`, `t:${r.tier}`, `c:${r.category}`);
+    }
+    for (let i = 1; i < path.length; i++) link(path[i - 1], path[i], r);
+  }
+  return { nodes: [...nodes.values()], links: [...links.values()].map((l) => Object.assign(l, { value: l.items.length })) };
+}
+function rank(n) {
+  const i = ORDER.indexOf(n.id); if (i >= 0) return i;
+  if (n.kind === "tier") return 10 + TIERS.indexOf(n.tier);
+  if (n.kind === "keep") return 20 - n.items.length / 1e5; // keeps above deletes, bigger first
+  return 30 - n.items.length / 1e5;
+}
+function nodeColor(n) {
+  if (n.kind === "keep" || n.kind === "all") return "var(--keep)";
+  if (n.kind === "tier") return `var(--${n.tier === "High" ? "high" : n.tier === "Medium" ? "med" : "low"})`;
+  if (n.kind === "del") return "var(--ink-2)";
+  return "var(--line-2)";
+}
+let sankeyNodes = [], sankeyLinks = [];
+function renderSankey() {
+  const svg = d3.select("#sankey");
+  const W = Math.max(720, $("sankey-wrap").clientWidth), H = 480;
+  svg.attr("width", W).attr("height", H).attr("viewBox", `0 0 ${W} ${H}`);
+  svg.selectAll("*").remove();
+  const g = buildGraph();
+  const sk = d3.sankey().nodeId((d) => d.id).nodeAlign(d3.sankeyLeft).nodeWidth(14).nodePadding(10)
+    .nodeSort((a, b) => rank(a) - rank(b)).linkSort(null).extent([[4, 8], [W - 150, H - 8]]);
+  const { nodes, links } = sk(g);
+  sankeyNodes = nodes; sankeyLinks = links;
+  svg.append("g").selectAll("path").data(links).join("path")
+    .attr("class", "link").attr("d", d3.sankeyLinkHorizontal())
+    .attr("stroke", (d) => (d.target.kind === "keep" ? "var(--keep)" : d.target.kind === "cat" ? nodeColor(d.source) : nodeColor(d.target)))
+    .attr("stroke-opacity", (d) => (d.target.kind === "keep" ? 0.25 : 0.32))
+    .attr("stroke-width", (d) => Math.max(1, d.width))
+    .on("click", (e, d) => select({ label: `${d.source.name} → ${d.target.name}`, items: d.items, key: d.key }))
+    .append("title").text((d) => `${d.source.name} → ${d.target.name}: ${d.value}`);
+  const ng = svg.append("g").selectAll("g").data(nodes).join("g").attr("class", "node");
+  ng.append("rect").attr("class", "body").attr("x", (d) => d.x0).attr("y", (d) => d.y0)
+    .attr("width", (d) => d.x1 - d.x0).attr("height", (d) => Math.max(1, d.y1 - d.y0))
+    .attr("fill", nodeColor).attr("rx", 2)
+    .on("click", (e, d) => select({ label: d.id === "all" ? "Whole batch" : d.name, items: d.items, key: d.id }))
+    .append("title").text((d) => `${d.name}: ${d.items.length}`);
+  // approval progress: thin bar right of each delete-side node (approved bottom-up, then excluded)
+  const prog = ng.filter((d) => d.kind !== "keep" && d.id !== "all");
+  prog.append("rect").attr("class", "pa").attr("x", (d) => d.x1 + 1).attr("width", 4).attr("fill", "var(--approved)");
+  prog.append("rect").attr("class", "px").attr("x", (d) => d.x1 + 1).attr("width", 4).attr("fill", "var(--excluded)");
+  ng.append("text").attr("x", (d) => d.x1 + 8).attr("y", (d) => (d.y0 + d.y1) / 2).attr("dy", "0.35em")
+    .attr("class", "lbl");
+  updateSankey();
+}
+function updateSankey() {
+  const svg = d3.select("#sankey");
+  svg.selectAll("g.node").classed("sel", (d) => d.id === selection.key);
+  svg.selectAll("path.link").classed("sel", (d) => d.key === selection.key);
+  svg.selectAll("rect.pa").each(function (d) { const c = counts(d.items), hgt = d.y1 - d.y0, ha = c.n ? (hgt * c.a) / c.n : 0;
+    d3.select(this).attr("y", d.y1 - ha).attr("height", ha); });
+  svg.selectAll("rect.px").each(function (d) { const c = counts(d.items), hgt = d.y1 - d.y0, ha = c.n ? (hgt * c.a) / c.n : 0, hx = c.n ? (hgt * c.x) / c.n : 0;
+    d3.select(this).attr("y", d.y1 - ha - hx).attr("height", hx); });
+  svg.selectAll("text.lbl").text((d) => {
+    const c = counts(d.items);
+    return d.kind === "keep" || d.id === "all" ? `${d.name} ${d.items.length}` : `${d.name} ${c.n}${c.a ? ` · ${c.a} ok` : ""}${c.x ? ` · ${c.x} out` : ""}`;
+  });
+}
+
+// ---------- panel ----------
+function select(sel) {
+  selection = sel; $("q").value = "";
+  renderPanel(); updateSankey();
+}
+function groupKey(r) {
+  if (groupBy === "sender") return [r.senderAddr, r.senderName === r.senderAddr ? r.senderAddr : `${r.senderName}  ·  ${r.senderAddr}`];
+  if (groupBy === "category") return [r.category, r.category + (r.catInferred ? " (inferred from subject)" : "")];
+  if (groupBy === "tier") return [r.tier || "kept", r.tier ? `${r.tier} risk` : "kept"];
+  return ["all", "All emails"];
+}
+function tierSummary(items) {
+  const c = d3.rollup(items.filter((r) => r.tier), (v) => v.length, (r) => r.tier);
+  return h("span", { class: "gtiers", style: "display:inline-flex;gap:8px" },
+    TIERS.filter((t) => c.get(t)).map((t) => h("span", { class: `tier ${t}`, title: `${t} risk` }, c.get(t))));
+}
+function bulkButtons(container, items, label) {
+  container.replaceChildren();
+  const c = counts(items);
+  if (!c.n) { container.append(h("span", { class: "muted small" }, "Kept emails are never deleted; nothing to decide here.")); return; }
+  const high = items.filter((r) => r.tier === "High" && r.operation === "delete" && stateOf(r.uid) === "u").length;
+  if (high && high < c.u) container.append(h("button", { onclick: (e) => { e.preventDefault(); setMany(items, "a", { skipTier: "High" }); } },
+    `Delete all but ${high} high-risk`));
+  container.append(h("button", { class: high && high < c.u ? null : "primary", onclick: (e) => { e.preventDefault(); setMany(items, "a"); },
+    title: "Marks every email here Delete, except ones you marked Don't delete" }, `Delete ${label || "all"} ${c.n - c.x}`));
+  container.append(h("button", { onclick: (e) => { e.preventDefault(); setMany(items, "x"); } }, "Don't delete any"));
+  if (c.a || c.x) container.append(h("button", { onclick: (e) => { e.preventDefault(); setMany(items, "u"); } }, "Reset"));
+}
+function visibleItems() {
+  const q = $("q").value.trim().toLowerCase();
+  return (selection.items || dels).filter((r) => {
+    if (q && !(`${r.sender} ${r.subject}`.toLowerCase().includes(q))) return false;
+    if (showState !== "all" && (r.operation !== "delete" || stateOf(r.uid) !== showState)) return false;
+    return true;
+  });
+}
+const openGroups = new Set();
+function renderPanel() {
+  const items = visibleItems();
+  const c = counts(selection.items || dels);
+  $("crumb").textContent = selection.label;
+  $("crumb-count").textContent = c.n ? `${c.n} proposed deletes · ${c.a} to delete · ${c.x} not to delete · ${c.u} undecided (kept)`
+                                      : `${(selection.items || []).length} kept emails`;
+  bulkButtons($("bulk"), items, $("q").value || showState !== "all" ? "shown" : "all");
+  // group-by and state segment controls
+  const seg = (el, opts, cur, set) => el.replaceChildren(...opts.map(([v, l]) =>
+    h("button", { "aria-pressed": String(v === cur), onclick: () => { set(v); renderPanel(); } }, l)));
+  seg($("groupby"), [["sender", "Sender"], ["category", "Category"], ["tier", "Risk tier"], ["none", "None"]], groupBy, (v) => (groupBy = v));
+  seg($("showstate"), [["all", "All"], ["u", "Undecided"], ["a", "Delete"], ["x", "Don't delete"]], showState, (v) => (showState = v));
+  const groups = d3.groups(items, (r) => groupKey(r)[0]).map(([k, v]) => ({ k, label: groupKey(v[0])[1], items: v,
+    maxRisk: d3.max(v, (r) => (r.risk ? r.risk.score : -99)) }));
+  groups.sort((a, b) => b.maxRisk - a.maxRisk || b.items.length - a.items.length || a.label.localeCompare(b.label));
+  const root = $("groups");
+  root.replaceChildren();
+  if (!groups.length) root.append(h("p", { class: "muted" }, "Nothing matches."));
+  for (const gr of groups) root.append(renderGroup(gr));
+}
+function renderGroup(gr) {
+  const c = counts(gr.items);
+  const bar = h("div", { class: "bar", title: `${c.a} to delete, ${c.x} not to delete, ${c.u} undecided` }, h("span", { class: "a" }), h("span", { class: "x" }));
+  fillBar(bar, c);
+  const btns = h("span", { class: "state-btns" });
+  const gid = `${groupBy}:${gr.k}`;
+  const det = h("details", { class: "group", open: openGroups.has(gid) || groupBy === "none" });
+  const sum = h("summary", {},
+    h("span", { class: "caret", "aria-hidden": "true" }, "▸"),
+    h("span", { class: "gname", title: gr.label }, h("b", {}, gr.items.length), "  ", gr.label),
+    h("span", { class: "gmeta" }, tierSummary(gr.items),
+      c.n ? h("span", { class: "small muted" }, `${c.a}/${c.n} to delete`) : null, c.n ? bar : null, btns));
+  if (c.n) {
+    btns.append(
+      h("button", { class: "on-approve", "aria-pressed": String(c.a === c.n), onclick: (e) => { e.preventDefault(); setMany(gr.items, "a"); } }, "Delete"),
+      h("button", { class: "on-exclude", "aria-pressed": String(c.x === c.n), onclick: (e) => { e.preventDefault(); setMany(gr.items, "x"); } }, "Don't delete"),
+      ...(c.a || c.x ? [h("button", { onclick: (e) => { e.preventDefault(); setMany(gr.items, "u"); } }, "Reset")] : []));
+  }
+  det.append(sum);
+  const fillRows = () => { if (det.querySelector("table")) return; det.append(emailTable(gr.items)); };
+  det.addEventListener("toggle", () => { if (det.open) { openGroups.add(gid); fillRows(); } else openGroups.delete(gid); });
+  if (det.open) fillRows();
+  return det;
+}
+function emailTable(items) {
+  const sorted = items.slice().sort((a, b) => (b.risk?.score ?? -99) - (a.risk?.score ?? -99) || a.ageDays - b.ageDays);
+  return h("table", { class: "emails" }, h("tbody", {}, sorted.map((r) => {
+    const s = stateOf(r.uid);
+    const margin = typeof r.p === "number" && typeof r.delete_threshold === "number" && r.p < 1 && r.p > 0
+      ? (logit(r.p) - logit(r.delete_threshold)).toFixed(1) : null;
+    return h("tr", { "data-uid": r.uid },
+      h("td", {}, r.operation === "delete" ? h("span", { class: "state-btns" },
+        h("button", { class: "on-approve", "aria-pressed": String(s === "a"), title: "Delete this email", onclick: () => setOne(r.uid, "a") }, "Delete"),
+        h("button", { class: "on-exclude", "aria-pressed": String(s === "x"), title: "Don't delete this email", onclick: () => setOne(r.uid, "x") }, "Don't delete"))
+        : h("span", { class: "muted small" }, `kept · ${r.reason}`)),
+      h("td", { class: "num hide-sm", title: r.date }, (r.date || "").slice(0, 10), h("br"), h("span", { class: "small" }, fmtAge(r.ageDays))),
+      h("td", {},
+        h("div", {}, r.tier ? h("span", { class: `tier ${r.tier}`, style: "margin-right:6px" }, r.tier) : null, r.subject || "(no subject)"),
+        groupBy !== "sender" ? h("div", { class: "small muted" }, r.sender) : null,
+        r.risk ? h("div", { class: "chips" },
+          r.risk.pts.map(([v, why]) => h("span", { class: `chip ${v > 0 ? "up" : "down"}`, title: `${v > 0 ? "+" : ""}${v} risk` }, `${v > 0 ? "+" : ""}${v} ${why}`)),
+          h("span", { class: "chip" }, `delete: ${r.reason}`),
+          margin != null ? h("span", { class: "chip", title: `p=${r.p}, threshold=${r.delete_threshold} (log-odds margin)` }, `margin ${margin}`) : null,
+          r.category ? h("span", { class: "chip" }, r.category + (r.catInferred ? "*" : "")) : null) : null),
+      h("td", { class: "num small hide-sm" }, `uid ${r.uid}`));
+  })));
+}
+function renderStats() {
+  const c = counts(dels);
+  $("s-total").textContent = c.n; $("s-a").textContent = c.a; $("s-x").textContent = c.x; $("s-u").textContent = c.u;
+  fillBar($("s-bar"), c);
+  $("delete-btn").disabled = busy();
+  $("delete-btn").className = c.a ? "danger" : "";
+  $("delete-btn").textContent = c.a ? `Delete ${c.a} email${c.a === 1 ? "" : "s"}` : "Finish batch, delete nothing";
+  $("discard-btn").disabled = busy();
+}
+function refresh() {
+  // keep scroll position and open groups; re-render panel in place
+  const y = window.scrollY;
+  renderPanel(); updateSankey(); renderStats();
+  window.scrollTo(0, y);
+}
+function renderRules() {
+  $("rules-list").replaceChildren(...[
+    "+2 financial, security or records category (expired one-time codes get -2 instead)",
+    "+2 under a year old, +1 under 3 years, -1 over 5 years",
+    "+1 the only proposed delete from that sender in this batch",
+    "+1 the address looks like a person (first.last), not a service",
+    "+3 you have written to this sender (needs sender_replied in the report)",
+    "+1 you open at least half of this sender's mail (needs sender_opened / sender_received)",
+    "+1 combiner score cleared the delete threshold by under 0.5 log-odds (needs p, delete_threshold)",
+    "Tier: High at 3 or more, Medium at 1-2, Low at 0 or below.",
+  ].map((t) => h("li", {}, t)));
+  const have = Object.entries(hasExt).filter(([, v]) => v).map(([k]) => k);
+  $("rules-src").textContent = have.length
+    ? `This report includes: ${have.join(", ")}. ${hasExt.category ? "" : "Categories marked * are inferred from the subject."}`
+    : "This report has only the basic fields, so categories (marked *) are inferred from the subject and the history and score rules are skipped.";
+}
+
+// ---------- server-driven batches ----------
+const BOOT = /*__BOOT__*/null;
+let STATE = null, loadedBatch = null, pollTimer = null;
+const busy = () => !!(STATE && STATE.job && STATE.job.running);
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: Object.assign({ "X-Reaper-Token": BOOT.token }, body === undefined ? {} : { "Content-Type": "application/json" }),
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+function banner(kind, text) {
+  const b = $("banner");
+  if (!text) { b.classList.add("hidden"); return; }
+  b.className = `banner ${kind}`; b.textContent = text;
+}
+const fmtDate = (s) => (s ? new Date(s).toLocaleString() : "");
+const STATUS = { dry_run: "dry run…", ready: "awaiting review", deleting: "deleting…", done: "done",
+                 discarded: "discarded", failed: "failed" };
+
+function renderHistory() {
+  const t = STATE.totals;
+  $("totals").textContent = `${t.batches} finished · ${t.reviewed} emails reviewed · ${t.deleted} deleted`;
+  $("history").replaceChildren(...STATE.batches.slice().reverse().map((b) => h("tr", {},
+    h("td", {}, b.id), h("td", {}, b.size ? `${b.first_uid}–${b.last_uid}` : ""),
+    h("td", { title: b.error || "" }, STATUS[b.status] + (b.error ? ` (${b.error})` : "")),
+    h("td", {}, b.size || ""), h("td", {}, b.proposed || ""), h("td", {}, b.marked || ""),
+    h("td", {}, b.status === "done" ? b.deleted + (b.remaining ? ` (${b.remaining} still there)` : "") : ""),
+    h("td", { class: "small" }, fmtDate(b.finished_at)))));
+  if (!STATE.batches.length) $("history").append(h("tr", {}, h("td", { colspan: 8, class: "muted" }, "No batches yet.")));
+}
+
+function showReview(show) {
+  for (const id of ["flow-card", "panel", "stats"]) $(id).classList.toggle("hidden", !show);
+  if (!show) { $("fname").textContent = ""; loadedBatch = null; rows = []; dels = []; }
+}
+
+async function sync() {
+  try { STATE = await api("/api/state"); }
+  catch (e) { banner("err", `Can't reach the review server: ${e.message}. Is 'inbox-reaper serve' still running?`); return; }
+  renderHistory();
+  const job = STATE.job, open = STATE.open_batch;
+  const openBatch = open ? STATE.batches.find((b) => b.id === open) : null;
+  $("start-btn").disabled = busy() || !!open;
+  $("start-note").textContent = open ? `Finish or discard batch ${open} first.` : busy() ? "A job is running." : "";
+  $("start-card").classList.toggle("hidden", !!openBatch && openBatch.status === "ready");
+  if (job && job.running) banner("busy", `${job.kind === "delete" ? "Deleting" : "Dry run"}: ${job.message}…`);
+  else if (job && job.error) banner("err", `${job.kind === "delete" ? "Delete" : "Dry run"} failed: ${job.error}`);
+  else if (job && job.message) banner(job.kind === "delete" ? "ok" : "ok",
+    job.kind === "delete" ? `Batch ${job.batch_id}: ${job.message}. Start the next batch when you're ready.`
+                          : `Batch ${job.batch_id} ready: ${job.message}. Mark what to delete below.`);
+  if (openBatch && openBatch.status === "ready" && loadedBatch !== openBatch.id) {
+    const report = await api(`/api/batches/${openBatch.id}/report`);
+    loadedBatch = openBatch.id;
+    load(report.map((r) => JSON.stringify(r)).join("\n"), String(openBatch.id));
+  } else if (!openBatch || openBatch.status !== "ready") {
+    if (loadedBatch !== null && !busy()) showReview(false);
+  }
+  if (rows.length) renderStats();
+  clearTimeout(pollTimer);
+  if (busy()) pollTimer = setTimeout(sync, 1500);
+}
+
+$("start-btn").addEventListener("click", async () => {
+  const size = Number($("batch-size").value) || BOOT.batch_size;
+  try { await api("/api/batches", { size }); } catch (e) { banner("err", e.message); }
+  sync();
+});
+
+$("delete-btn").addEventListener("click", async () => {
+  if (!loadedBatch) return;
+  const uids = approvedUids();
+  const high = dels.filter((r) => r.tier === "High" && stateOf(r.uid) === "a").length;
+  const undecided = counts(dels).u;
+  const msg = uids.length
+    ? `Permanently delete ${uids.length} email${uids.length === 1 ? "" : "s"} from your mailbox?` +
+      (high ? `\n\n${high} of them are high-risk.` : "") +
+      `\n\nThe other ${dels.length - uids.length} proposed deletes${undecided ? " (including undecided ones)" : ""} will be kept.` +
+      "\n\nThis can't be undone."
+    : `Finish batch ${loadedBatch} without deleting anything? All ${dels.length} proposed deletes will be kept.`;
+  if (!confirm(msg)) return;
+  try {
+    await api(`/api/batches/${loadedBatch}/delete`, { uids, confirm: "delete" });
+    try { localStorage.removeItem(storeKey); } catch {}
+  } catch (e) { banner("err", e.message); }
+  showReview(false);
+  sync();
+});
+
+$("discard-btn").addEventListener("click", async () => {
+  if (!loadedBatch || !confirm(`Discard batch ${loadedBatch}? Nothing is deleted, and its emails are offered again in the next batch.`)) return;
+  try { await api(`/api/batches/${loadedBatch}/discard`, {}); try { localStorage.removeItem(storeKey); } catch {} }
+  catch (e) { banner("err", e.message); }
+  showReview(false);
+  sync();
+});
+
+$("account").textContent = `${BOOT.email} · AI ${BOOT.ai ? "on" : "off"}${BOOT.combiner ? "" : " · no combiner (only expired codes are proposed)"}`;
+$("batch-size").value = BOOT.batch_size;
+document.addEventListener("visibilitychange", () => { if (!document.hidden) sync(); });
+$("show-keeps").addEventListener("change", () => { renderSankey(); });
+$("q").addEventListener("input", () => { renderPanel(); });
+let rz; window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => rows.length && renderSankey(), 150); });
+if (typeof d3 === "undefined" || typeof d3.sankey !== "function")
+  banner("err", "The chart library didn't load (it comes from cdn.jsdelivr.net). Check your connection and reload.");
+// test hook
+window.__review = { decisions: () => decisions, rows: () => rows, approvedUids, sync };
+sync();
+</script>
+</body>
+</html>
