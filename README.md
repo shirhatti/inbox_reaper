@@ -31,17 +31,33 @@ uv run inbox-reaper process --email user@outlook.com --max-emails 50
 ```
 
 The last command is a dry run over the 50 oldest emails. To actually clean
-up, use the review app (next section), ideally after training and evaluating a
-combiner (below).
+up, use the review app (next section).
 
 ## Cleaning up: the review app
 
 ```bash
-uv run inbox-reaper serve --config config.json --combiner combiner.json
+uv run inbox-reaper serve --email you@outlook.com
 ```
 
-This opens a page on your machine (`http://127.0.0.1:<port>`) that runs the
-whole loop, one batch at a time:
+This opens a page on your machine (`http://127.0.0.1:<port>`) with two tabs.
+
+**Train** (start here for a new mailbox): the combiner is what proposes most
+deletes, and it learns from your labels.
+
+1. **Sample** emails from your inbox (read-only; nothing is marked read).
+2. **Label** them one at a time: keep or delete, how long it stays useful,
+   a category, and how bad losing it would be. Keyboard: `K` keep, `D`
+   delete, `S` skip, `←` back to relabel.
+3. **Train combiner** once you have at least 10 keeps and 10 deletes (300
+   labels is a good start). The page shows the cross-validated results: how
+   many keep-labelled emails it would delete (should be 0), and how many
+   deletable ones it catches.
+
+The combiner is saved as `~/.inbox-reaper/<email>/combiner.json` and used from
+the next batch on; later `serve` runs pick it up without `--combiner`. Until
+one exists, dry runs only propose deleting expired one-time codes.
+
+**Clean up** runs the delete loop, one batch at a time:
 
 1. **Start dry run:** proposes deletes for the next unreviewed emails, oldest
    first (2,000 by default). Nothing in the mailbox changes.
@@ -63,8 +79,9 @@ Safety:
 - The server listens on 127.0.0.1 only, and every request needs a per-run
   token from the page. Other websites can't read your mail or trigger deletes.
 
-Batches, totals and reports are kept in `~/.inbox-reaper/<email>/review`
-(`--state-dir` to change), so you can stop and resume any time; a dry run cut
+Batches, totals and reports are kept in `~/.inbox-reaper/<email>/review`,
+samples and labels in `~/.inbox-reaper/<email>/training` (`--state-dir`
+moves both), so you can stop and resume any time; a dry run cut
 off by stopping the server is discarded, and an interrupted delete returns to
 review. Your marks on the page are saved in the browser until you delete or
 discard the batch.
@@ -134,7 +151,10 @@ Keep labels are weighted by how bad losing the email would be (1, 3 or 10).
 The metrics `train` prints are nested cross-validation, so they are measured
 on emails the model didn't see.
 
-## Training the combiner on your labels
+## Training the combiner on your labels (command line)
+
+The review app's Train tab does steps 1, 3 and 5 below; use the commands to
+compare labellers, evaluate, or add mailbox history.
 
 Every file below stays on your machine and holds mailbox data. Keep them
 private; `.gitignore` already excludes `samples*.jsonl`, `labels*.jsonl`,

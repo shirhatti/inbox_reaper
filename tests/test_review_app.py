@@ -4,6 +4,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from inbox_reaper.review_app import (
     ReviewStore,
     Survey,
 )
+from inbox_reaper.state import Email
 
 
 def read_uids(path: Path) -> list[str]:
@@ -259,3 +261,118 @@ class TestHTTP:
         assert call(srv, "/api/batches/1/report?x")[0] == 200
         assert call(srv, "/api/batches/zz/report")[0] == 404
         assert call(srv, "/api/batches", {"size": 0})[0] in (400, 409)
+
+
+# ---------------------------------------------------------------------------
+# Training (sample, label, train) from the app
+# ---------------------------------------------------------------------------
+
+
+def fake_email(uid: int) -> Email:
+    promo = uid % 2 == 0
+    return Email(
+        uid=str(uid),
+        subject="Weekly deals" if promo else "Re: dinner",
+        sender="news@e.shop.example" if promo else "Alex <alex@gmail.com>",
+        body="Save 50% today" if promo else "See you at 7",
+        date=datetime(2015, 1, 1, tzinfo=UTC),
+        headers={"precedence": "bulk", "list-id": "<x>"} if promo else {},
+        has_list_unsubscribe=promo,
+    )
+
+
+class TrainingOps(FakeOps):
+    def __init__(self, n: int = 200):
+        super().__init__(n)
+        self.combiner = None
+
+    async def sample(self, count, seed, exclude):
+        pool = [u for u in sorted(self.uids) if str(u) not in exclude]
+        return [fake_email(u) for u in pool[:count]]
+
+    def set_combiner(self, path):
+        self.combiner = path
+
+
+def label_all(service):
+    for s in service.training_samples():
+        action = "delete" if int(s["uid"]) % 2 == 0 else "keep"
+        service.save_label({"uid": s["uid"], "action": action, "category": "promo"})
+
+
+class TestTraining:
+    def test_sampling_adds_new_emails_only(self, tmp_path):
+        service = make_service(tmp_path, TrainingOps())
+        service.start_sampling(30)
+        service.wait()
+        service.start_sampling(30)
+        service.wait()
+        uids = [s["uid"] for s in service.training_samples()]
+        assert len(uids) == len(set(uids)) == 60
+        assert service.training.summary()["samples"] == 60
+
+    def test_label_validation_and_relabelling(self, tmp_path):
+        service = make_service(tmp_path, TrainingOps())
+        service.start_sampling(5)
+        service.wait()
+        with pytest.raises(RejectedError, match="no sampled email"):
+            service.save_label({"uid": "999", "action": "keep"})
+        with pytest.raises(RejectedError, match="unknown category"):
+            service.save_label({"uid": "1", "action": "keep", "category": "x"})
+        with pytest.raises(RejectedError):
+            service.save_label({"uid": "1", "action": "maybe"})
+        service.save_label({"uid": "1", "action": "delete"})
+        service.save_label({"uid": "1", "action": "keep", "loss": "bad"})
+        summary = service.training.summary()
+        assert (summary["labelled"], summary["keep"], summary["delete"]) == (1, 1, 0)
+
+    def test_training_needs_enough_of_each_label(self, tmp_path):
+        service = make_service(tmp_path, TrainingOps())
+        service.start_sampling(12)
+        service.wait()
+        label_all(service)  # 6 keeps, 6 deletes
+        assert not service.training.summary()["can_train"]
+        with pytest.raises(RejectedError, match="at least 10"):
+            service.start_training()
+
+    def test_trained_combiner_is_saved_and_used_for_next_batches(self, tmp_path):
+        ops = TrainingOps()
+        service = make_service(tmp_path, ops)
+        service.start_sampling(80)
+        service.wait()
+        label_all(service)
+        service.start_training()
+        service.wait()
+        assert service.job.error is None, service.job.error
+        assert "wrong deletes in cross-validation" in service.job.message
+        path = service.training.combiner_path
+        assert path.exists() and ops.combiner == path
+        info = service.snapshot()
+        assert info["combiner_active"] is True
+        assert info["training"]["combiner"]["trained_on"] == 80
+        assert info["training"]["combiner"]["metrics"]["false_deletes"] == 0
+
+    def test_training_over_http(self, tmp_path):
+        ops = TrainingOps()
+        srv = ReviewServer(
+            make_service(tmp_path, ops),
+            {"email": "me@example.com", "batch_size": 4, "ai": False, "categories": []},
+        )
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        try:
+            assert call(srv, "/api/training/sample", {"count": 3})[0] == 200
+            srv.service.wait()
+            status, samples = call(srv, "/api/training/samples")
+            assert status == 200 and len(samples) == 3 and samples[0]["label"] is None
+            status, label = call(
+                srv,
+                "/api/training/labels",
+                {"uid": samples[0]["uid"], "action": "keep"},
+            )
+            assert status == 200 and label["labeler"] == "human"
+            assert call(srv, "/api/training/train", {})[0] == 400  # too few labels
+            assert call(srv, "/api/training/samples", token=False)[0] == 403
+        finally:
+            srv.shutdown()
+            srv.server_close()

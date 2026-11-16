@@ -65,6 +65,24 @@ table.hist { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.hist th, table.hist td { text-align: left; padding: 5px 6px; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
 table.hist th { color: var(--ink-3); font-weight: 600; border-top: 0; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.tabs { display: inline-flex; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; }
+.tabs button { border: 0; border-radius: 0; padding: 5px 14px; }
+.tabs button[aria-selected="true"] { background: var(--ink); color: var(--bg); font-weight: 600; }
+body.train-mode #clean-view, body.train-mode #stats, body.train-mode #fname { display: none !important; }
+body:not(.train-mode) #train-view { display: none; }
+.email-head div { margin: 2px 0; }
+.email-body { white-space: pre-wrap; background: var(--surface-2); border-radius: 8px; padding: 10px 12px;
+  max-height: 320px; overflow: auto; font-size: 13px; margin: 10px 0; overflow-wrap: anywhere; }
+.field { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.field > span:first-child { min-width: 9.5em; color: var(--ink-2); font-size: 13px; }
+.big { font-size: 15px; padding: 8px 18px; }
+button.keep { background: var(--low); border-color: var(--low); color: #fff; font-weight: 600; }
+kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line-2); border-radius: 4px; padding: 0 4px; color: var(--ink-3); }
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 10px 0; }
+.metric { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
+.metric b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+input[type=text] { font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 7px; min-width: 16em;
+  border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); }
 input[type=number] { font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 7px; width: 7em;
   border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); }
 button:disabled { opacity: .45; cursor: not-allowed; }
@@ -129,6 +147,10 @@ details.rules ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; color: 
 <body>
 <header class="top">
   <h1>Inbox Reaper</h1>
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tab-clean" aria-selected="true">Clean up</button>
+    <button role="tab" id="tab-train" aria-selected="false">Train</button>
+  </div>
   <span id="account" class="muted small"></span>
   <span id="fname" class="muted small"></span>
   <div class="stats hidden" id="stats">
@@ -143,6 +165,9 @@ details.rules ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; color: 
 </header>
 <main>
   <div id="banner" class="banner hidden" role="status" aria-live="polite"></div>
+  <div id="clean-view">
+  <div id="no-combiner" class="banner err hidden">No combiner yet, so dry runs only propose deleting expired one-time codes.
+    <button id="go-train" style="margin-left:8px">Train one</button></div>
   <section class="card" id="start-card">
     <div class="row">
       <b>Next batch</b>
@@ -195,6 +220,54 @@ details.rules ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; color: 
     </div>
     <div id="groups"></div>
   </section>
+  </div>
+
+  <div id="train-view">
+    <section class="card">
+      <div class="row"><b>Train the combiner</b><span class="muted small" id="train-progress"></span></div>
+      <p class="muted small" style="margin:6px 0 0">The combiner learns from emails you label: it proposes deleting mail like the
+        ones you mark <b>Delete</b>, and never anything scoring like a keep. Label a random sample (300 is a good start), then train.
+        Samples are read without marking anything read, and stay on this computer.</p>
+      <div class="row" style="margin-top:10px">
+        <label class="small">Sample <input type="number" id="sample-count" min="1" max="1000" step="50" value="100"> more emails</label>
+        <button id="sample-btn">Sample</button>
+      </div>
+    </section>
+
+    <section class="card" id="label-card">
+      <div class="row"><b id="label-title">Label</b><span class="muted small" id="label-pos"></span>
+        <span style="margin-left:auto" class="small muted"><kbd>K</kbd> keep · <kbd>D</kbd> delete · <kbd>S</kbd> skip · <kbd>←</kbd> back</span></div>
+      <div id="label-empty" class="muted" style="margin-top:8px"></div>
+      <div id="label-form" class="hidden">
+        <div class="email-head" style="margin-top:8px">
+          <div><b id="l-subject"></b></div>
+          <div class="small" id="l-sender"></div>
+          <div class="small muted" id="l-date"></div>
+          <div class="small muted" id="l-attach"></div>
+        </div>
+        <div class="email-body" id="l-body"></div>
+        <div class="field"><span>Useful for</span><div class="seg" id="l-lifetime"></div>
+          <span class="small muted">Codes and sign-in links: minutes. Deliveries, reminders: days.</span></div>
+        <div class="field"><span>Category</span><select id="l-category"></select></div>
+        <div class="field"><span>If it were deleted</span><div class="seg" id="l-loss"></div>
+          <span class="small muted">Counts for keeps: "bad" ones weigh 10x in training.</span></div>
+        <div class="field"><span>Note</span><input type="text" id="l-note" placeholder="optional"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="keep big" id="l-keep">Keep</button>
+          <button class="danger big" id="l-delete">Delete</button>
+          <button id="l-skip">Skip</button>
+          <button id="l-back">Back</button>
+          <span class="small muted" id="l-saved"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="row"><b>Combiner</b><button class="primary" id="train-btn" style="margin-left:auto">Train combiner</button></div>
+      <p class="small muted" id="train-need"></p>
+      <div id="combiner-info"></div>
+    </section>
+  </div>
 </main>
 
 <script>
@@ -602,11 +675,16 @@ async function sync() {
   $("start-btn").disabled = busy() || !!open;
   $("start-note").textContent = open ? `Finish or discard batch ${open} first.` : busy() ? "A job is running." : "";
   $("start-card").classList.toggle("hidden", !!openBatch && openBatch.status === "ready");
-  if (job && job.running) banner("busy", `${job.kind === "delete" ? "Deleting" : "Dry run"}: ${job.message}…`);
-  else if (job && job.error) banner("err", `${job.kind === "delete" ? "Delete" : "Dry run"} failed: ${job.error}`);
-  else if (job && job.message) banner(job.kind === "delete" ? "ok" : "ok",
+  const KIND = { delete: "Delete", dry_run: "Dry run", sample: "Sampling", train: "Training" };
+  if (job && job.running) banner("busy", `${KIND[job.kind]}: ${job.message}…`);
+  else if (job && job.error) banner("err", `${KIND[job.kind]} failed: ${job.error}`);
+  else if (job && job.message) banner("ok",
     job.kind === "delete" ? `Batch ${job.batch_id}: ${job.message}. Start the next batch when you're ready.`
-                          : `Batch ${job.batch_id} ready: ${job.message}. Mark what to delete below.`);
+    : job.kind === "dry_run" ? `Batch ${job.batch_id} ready: ${job.message}. Mark what to delete below.`
+    : job.kind === "sample" ? `Sampling: ${job.message}.` : `Combiner ${job.message}.`);
+  $("no-combiner").classList.toggle("hidden", STATE.combiner_active);
+  $("account").textContent = `${BOOT.email} · AI ${BOOT.ai ? "on" : "off"}`;
+  renderTraining(job);
   if (openBatch && openBatch.status === "ready" && loadedBatch !== openBatch.id) {
     const report = await api(`/api/batches/${openBatch.id}/report`);
     loadedBatch = openBatch.id;
@@ -653,8 +731,129 @@ $("discard-btn").addEventListener("click", async () => {
   sync();
 });
 
-$("account").textContent = `${BOOT.email} · AI ${BOOT.ai ? "on" : "off"}${BOOT.combiner ? "" : " · no combiner (only expired codes are proposed)"}`;
+$("account").textContent = `${BOOT.email} · AI ${BOOT.ai ? "on" : "off"}`;
 $("batch-size").value = BOOT.batch_size;
+
+// ---------- Train view ----------
+let samples = null, queue = [], qpos = 0, backStack = [], lastTrainingJob = null;
+const LIFETIMES = [["minutes", "Minutes"], ["days", "Days"], ["forever", "Forever"]];
+const LOSSES = [["none", "Nothing"], ["annoying", "Annoying"], ["bad", "Bad"]];
+let form = { lifetime: "forever", loss: "none" };
+
+function setView(v) {
+  document.body.classList.toggle("train-mode", v === "train");
+  $("tab-clean").setAttribute("aria-selected", String(v !== "train"));
+  $("tab-train").setAttribute("aria-selected", String(v === "train"));
+  try { localStorage.setItem("reaper-view", v); } catch {}
+  if (v === "train" && samples === null) loadSamples();
+}
+$("tab-clean").addEventListener("click", () => setView("clean"));
+$("tab-train").addEventListener("click", () => setView("train"));
+$("go-train").addEventListener("click", () => setView("train"));
+
+async function loadSamples() {
+  samples = await api("/api/training/samples");
+  queue = samples.filter((x) => !x.label);
+  qpos = 0; backStack = [];
+  showSample();
+}
+function seg2(el, opts, cur, set) {
+  el.replaceChildren(...opts.map(([v, l]) => h("button", { "aria-pressed": String(v === cur), onclick: () => { set(v); showSample(true); } }, l)));
+}
+function current() { return queue[qpos] || null; }
+function showSample(keepForm) {
+  const t = STATE ? STATE.training : null;
+  const x = current();
+  $("label-form").classList.toggle("hidden", !x);
+  if (!x) {
+    $("label-title").textContent = "Label";
+    $("label-pos").textContent = "";
+    $("label-empty").textContent = samples && samples.length
+      ? "Everything sampled is labelled. Sample more, or train the combiner below."
+      : "Nothing to label yet: sample some emails above.";
+    return;
+  }
+  $("label-empty").textContent = "";
+  $("label-title").textContent = x.label ? "Relabel" : "Label";
+  $("label-pos").textContent = `${queue.length - qpos} left in this round`;
+  if (!keepForm) {
+    form = { lifetime: x.label?.lifetime || "forever", loss: x.label?.loss || "none" };
+    $("l-note").value = x.label?.note || "";
+    $("l-category").value = x.label?.category || "other";
+  }
+  $("l-subject").textContent = x.subject || "(no subject)";
+  $("l-sender").textContent = x.sender;
+  const age = (Date.parse(x.sampled_at) - Date.parse(x.date)) / DAY;
+  $("l-date").textContent = `${(x.date || "").slice(0, 10)} · ${fmtAge(Math.max(0, age))} old when sampled`;
+  $("l-attach").textContent = x.attachments.length ? `Attachments: ${x.attachments.join(", ")}` : "";
+  $("l-body").textContent = x.body || "(empty body)";
+  seg2($("l-lifetime"), LIFETIMES, form.lifetime, (v) => (form.lifetime = v));
+  seg2($("l-loss"), LOSSES, form.loss, (v) => (form.loss = v));
+}
+$("l-category").replaceChildren(...BOOT.categories.map((c) => h("option", { value: c }, c)));
+
+async function saveLabel(action) {
+  const x = current(); if (!x) return;
+  const body = { uid: x.uid, action, lifetime: form.lifetime, loss: form.loss,
+                 category: $("l-category").value, note: $("l-note").value };
+  try { x.label = await api("/api/training/labels", body); }
+  catch (e) { $("l-saved").textContent = `Not saved: ${e.message}`; return; }
+  $("l-saved").textContent = `Saved: ${action}`;
+  backStack.push(qpos); qpos++;
+  showSample(); sync();
+}
+$("l-keep").addEventListener("click", () => saveLabel("keep"));
+$("l-delete").addEventListener("click", () => saveLabel("delete"));
+$("l-skip").addEventListener("click", () => { if (current()) { backStack.push(qpos); qpos++; showSample(); } });
+$("l-back").addEventListener("click", () => { if (backStack.length) { qpos = backStack.pop(); showSample(); } });
+document.addEventListener("keydown", (e) => {
+  if (!document.body.classList.contains("train-mode") || !current()) return;
+  if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
+  const k = e.key.toLowerCase();
+  if (k === "k") saveLabel("keep"); else if (k === "d") saveLabel("delete");
+  else if (k === "s") $("l-skip").click(); else if (e.key === "ArrowLeft") $("l-back").click();
+  else return;
+  e.preventDefault();
+});
+
+$("sample-btn").addEventListener("click", async () => {
+  try { await api("/api/training/sample", { count: Number($("sample-count").value) || 100 }); }
+  catch (e) { banner("err", e.message); }
+  sync();
+});
+$("train-btn").addEventListener("click", async () => {
+  try { await api("/api/training/train", {}); } catch (e) { banner("err", e.message); }
+  sync();
+});
+
+function renderTraining(job) {
+  const t = STATE.training;
+  $("train-progress").textContent = `${t.labelled} of ${t.samples} sampled emails labelled · ${t.keep} keep · ${t.delete} delete`;
+  $("sample-btn").disabled = busy();
+  $("train-btn").disabled = busy() || !t.can_train;
+  $("train-need").textContent = t.can_train
+    ? "Training takes a few seconds. Results are cross-validated: measured on labelled emails the model didn't see."
+    : `Label at least ${t.min_each} keeps and ${t.min_each} deletes to train (you have ${t.keep} and ${t.delete}). More labels give a better combiner.`;
+  const c = t.combiner, info = $("combiner-info");
+  if (!c) info.replaceChildren(h("p", { class: "muted" }, "No combiner trained here yet."));
+  else if (c.error) info.replaceChildren(h("p", { style: "color:var(--high)" }, `Can't read the combiner: ${c.error}`));
+  else {
+    const m = c.metrics, pct = (v) => `${Math.round(100 * v)}%`;
+    info.replaceChildren(
+      h("div", { class: "metrics" },
+        h("div", { class: "metric" }, h("b", { style: m.false_deletes ? "color:var(--high)" : "" }, m.false_deletes), "keep-labelled emails it would delete"),
+        h("div", { class: "metric" }, h("b", {}, `${m.deletes_caught}/${m.delete_examples}`), "deletable emails it catches"),
+        h("div", { class: "metric" }, h("b", {}, pct(m.contested_share)), "left undecided (kept)"),
+        h("div", { class: "metric" }, h("b", {}, c.trained_on), "emails trained on")),
+      h("p", { class: "small muted" }, `Trained ${fmtDate(c.generated_at)}. Used for every dry run from now on.` +
+        (m.false_deletes ? " Some keep-labelled emails would be deleted: check their labels, label more, and retrain." : "")));
+  }
+  // reload samples after a sampling job finishes
+  const key = job ? `${job.kind}:${job.running}:${job.message}` : null;
+  if (job && job.kind === "sample" && !job.running && key !== lastTrainingJob && samples !== null) loadSamples();
+  lastTrainingJob = key;
+}
+try { if (localStorage.getItem("reaper-view") === "train") setView("train"); } catch {}
 document.addEventListener("visibilitychange", () => { if (!document.hidden) sync(); });
 $("show-keeps").addEventListener("change", () => { renderSankey(); });
 $("q").addEventListener("input", () => { renderPanel(); });
