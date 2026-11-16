@@ -30,9 +30,44 @@ uv run inbox-reaper login user@outlook.com  # opens the browser (OAuth)
 uv run inbox-reaper process --email user@outlook.com --max-emails 50
 ```
 
-The last command is a dry run over the 50 oldest emails. Add `--no-dry-run`
-only after you've read its log, and ideally after training and evaluating a
+The last command is a dry run over the 50 oldest emails. To actually clean
+up, use the review app (next section), ideally after training and evaluating a
 combiner (below).
+
+## Cleaning up: the review app
+
+```bash
+uv run inbox-reaper serve --config config.json --combiner combiner.json
+```
+
+This opens a page on your machine (`http://127.0.0.1:<port>`) that runs the
+whole loop, one batch at a time:
+
+1. **Start dry run:** proposes deletes for the next unreviewed emails, oldest
+   first (2,000 by default). Nothing in the mailbox changes.
+2. **Review:** a sankey shows the batch flowing to delete reasons, risk tiers
+   (High / Medium / Low) and categories. Click any box or band to see its
+   emails grouped by sender, and mark each one **Delete** or **Don't delete**,
+   in bulk or one at a time. Anything undecided is kept.
+3. **Delete N emails:** after a confirmation, exactly the marked emails are
+   deleted, and the INBOX is searched afterwards to check they're gone. Then
+   start the next batch. **Discard batch** drops a batch without deleting; its
+   emails are offered again next time.
+
+Safety:
+- Only UIDs that the batch's dry run proposed can be deleted.
+- A delete is refused if the INBOX was renumbered (UIDVALIDITY changed) since
+  the dry run, because a UID might then name a different email.
+- The pipeline re-checks every marked email before it is deleted.
+- The AI is off unless you pass `--ai`, so undecided mail is kept.
+- The server listens on 127.0.0.1 only, and every request needs a per-run
+  token from the page. Other websites can't read your mail or trigger deletes.
+
+Batches, totals and reports are kept in `~/.inbox-reaper/<email>/review`
+(`--state-dir` to change), so you can stop and resume any time; a dry run cut
+off by stopping the server is discarded, and an interrupted delete returns to
+review. Your marks on the page are saved in the browser until you delete or
+discard the batch.
 
 ## How an email is decided
 
@@ -163,7 +198,9 @@ Whether history helps depends on your mailbox: compare `train` with and
 without `--history` on the same labels. If you keep everything marked read,
 the read-state signals carry no information.
 
-## Deleting safely: review, then delete exactly what you approved
+## Deleting safely from the command line
+
+The review app does this for you; these are the steps it runs.
 
 ```bash
 # 1. Dry run: nothing changes; every decision goes to the report
@@ -244,6 +281,7 @@ See `config.example.yaml` for every option.
 | `test EMAIL` | Check the IMAP connection |
 | `diagnose EMAIL [--refresh]` | Inspect the stored token, optionally test a refresh |
 | `download-model [--model]` | Download the MLX model |
+| `serve` | The review app: dry-run, review and delete in batches from a local web page |
 | `process` | Classify the INBOX and delete (dry run by default) |
 | `learn` | Read-only: classify and write sender/domain rules |
 | `sample` | Read-only: save a random sample of emails for labelling |
@@ -317,6 +355,7 @@ asyncio.run(run_streaming_pipeline(config.model_copy(update={"rules_path": "rule
 | `agents.py` | Deterministic filters and the AI classifier |
 | `features.py` | Feature processors and the time rule |
 | `history.py` | Read-only mailbox history (INBOX and Sent) |
+| `review_app.py`, `web/review.html` | The review app: batch state, background jobs, local HTTP server, review page |
 | `combiner.py` | Logistic-regression combiner and precision-first thresholds |
 | `labeling.py` | Samples, labels, comparison, training, evaluation |
 | `rules.py` | Learned rules: load, save, match, learn |

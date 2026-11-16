@@ -218,3 +218,4 @@ labels*.jsonl
 review*.jsonl
 history*.json
 report*.jsonl
+.claude/launch.json
