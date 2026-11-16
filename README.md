@@ -131,7 +131,7 @@ inbox-reaper train samples.jsonl --labels labels-human.jsonl --labels labels-mod
 inbox-reaper evaluate samples.jsonl --labels labels-human.jsonl \
   --combiner combiner.json --history history.json
 
-# 7. Use it
+# 7. Use it (add --history history.json if you trained with it)
 inbox-reaper process --email user@outlook.com --combiner combiner.json
 ```
 
@@ -147,10 +147,21 @@ deletes that `evaluate` lists, not just the totals.
 
 `inbox-reaper history` scans the INBOX (sender, date, read and flagged state of
 every message) and the Sent folder (who you've written to, and the Message-IDs
-of what you sent), read-only. A combiner trained with `--history` remembers
-it: `process` then builds a fresh history before classifying, and `evaluate`
-refuses to run that combiner without one. On a large mailbox the scan takes
-several minutes.
+of what you sent), read-only. The first scan of a large mailbox is slow (about
+15 minutes for 77,000 messages on Outlook). After that the file is updated in
+place: only new messages are fetched, and read and flagged state comes from
+two cheap `UID SEARCH` commands, so an update takes seconds. If the server
+renumbers a folder (a new UIDVALIDITY), that folder is rescanned; `--full`
+forces a rescan.
+
+A combiner trained with `--history` remembers it. Run it with
+`process --history history.json`, which updates the file before classifying.
+`evaluate`, and `process` without a history, refuse to run such a combiner,
+so the history features can never silently drop to 0.
+
+Whether history helps depends on your mailbox: compare `train` with and
+without `--history` on the same labels. If you keep everything marked read,
+the read-state signals carry no information.
 
 ## Learned rules
 
@@ -200,6 +211,7 @@ whitelist_domains: [example.com]
 important_extensions: [.pdf, .doc, .docx]
 rules_path: null              # from `learn`
 combiner_path: null           # from `train`
+history_path: null            # from `history`, if the combiner uses it
 dry_run: true
 ```
 
@@ -217,7 +229,7 @@ See `config.example.yaml` for every option.
 | `process` | Classify the INBOX and delete (dry run by default) |
 | `learn` | Read-only: classify and write sender/domain rules |
 | `sample` | Read-only: save a random sample of emails for labelling |
-| `history` | Read-only: save INBOX and Sent behaviour for the history features |
+| `history` | Read-only: save or update INBOX and Sent behaviour for the history features |
 | `label` | Label sampled emails interactively, along several dimensions |
 | `compare-labels` | Agreement between labellers, and their disagreements |
 | `train` | Train the combiner from labelled samples |
@@ -240,6 +252,7 @@ See `config.example.yaml` for every option.
 | `--whitelist-domain TEXT` | | Keep emails from this domain (repeatable) |
 | `--rules FILE` | | Rules from `learn` |
 | `--combiner FILE` | | Combiner from `train` |
+| `--history FILE` | | Mailbox history for a combiner trained with one (created if missing, then updated) |
 
 ## Performance
 

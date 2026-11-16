@@ -104,6 +104,8 @@ class Config(BaseModel):
     rules_path: str | None = None
     # Trained combiner (from `inbox-reaper train`): decides from the feature vector
     combiner_path: str | None = None
+    # Mailbox history file, updated incrementally when the combiner needs one
+    history_path: str | None = None
 
     # Safety
     dry_run: bool = True

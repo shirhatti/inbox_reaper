@@ -54,6 +54,16 @@ important_extensions:
   - .xlsx
   - .pptx
 
+# Learned Models
+# --------------
+# Sender/domain rules from 'inbox-reaper learn' (null = none)
+rules_path: null
+# Combiner from 'inbox-reaper train' (null = heuristics and AI only)
+combiner_path: null
+# Mailbox history from 'inbox-reaper history'; needed only by a combiner
+# trained with --history, and updated in place on each run
+history_path: null
+
 # Safety Settings
 # ---------------
 # Dry run mode: when true, no emails are actually deleted

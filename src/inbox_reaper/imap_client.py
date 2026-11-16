@@ -116,6 +116,7 @@ def parse_fetch_literals(lines: list[Any]) -> dict[str, bytes]:
     return results
 
 
+_UIDVALIDITY_RE = re.compile(r"\bUIDVALIDITY (\d+)")
 _FLAGS_RE = re.compile(r"\bFLAGS \(([^)]*)\)")
 _LIST_RE = re.compile(r'\(([^)]*)\)\s+(?:"[^"]*"|NIL)\s+(?:"((?:[^"\\]|\\.)*)"|(\S+))')
 # Fallback names when the server does not mark its Sent folder (RFC 6154)
@@ -332,11 +333,22 @@ class AsyncIMAPClient:
 
         return info
 
-    async def examine_mailbox(self, mailbox: str) -> None:
-        """Open a mailbox read-only (EXAMINE): nothing in it can change."""
+    async def examine_mailbox(self, mailbox: str) -> str | None:
+        """Open a mailbox read-only (EXAMINE): nothing in it can change.
+
+        Returns its UIDVALIDITY (None if the server does not report it).
+        """
         if not self.client:
             raise IMAPConnectionError("Not connected to IMAP server")
-        _require_ok(await self.client.examine(_quote(mailbox)), f"examine {mailbox}")
+        response = await self.client.examine(_quote(mailbox))
+        _require_ok(response, f"examine {mailbox}")
+        for line in response.lines:
+            text = (
+                line.decode(errors="replace") if isinstance(line, bytes) else str(line)
+            )
+            if match := _UIDVALIDITY_RE.search(text):
+                return match.group(1)
+        return None
 
     async def find_sent_mailbox(self) -> str | None:
         """Name of the Sent folder, or None if the server has none we recognise."""

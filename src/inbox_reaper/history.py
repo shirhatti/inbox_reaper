@@ -74,6 +74,10 @@ class MailboxHistory(BaseModel):
     contacted: dict[str, int] = Field(default_factory=dict)
     # Message-IDs of mail you sent (to recognise threads you took part in)
     sent_ids: list[str] = Field(default_factory=list)
+    # For incremental updates: folder UIDVALIDITY and Sent UIDs already read
+    inbox_validity: str | None = None
+    sent_validity: str | None = None
+    sent_uids: list[str] = Field(default_factory=list)
 
     @cached_property
     def by_sender(self) -> dict[str, SenderStats]:
@@ -133,9 +137,17 @@ def _batches(uids: list[str]) -> Iterable[list[str]]:
 
 
 async def build_history(
-    client: "AsyncIMAPClient", *, include_sent: bool = True
+    client: "AsyncIMAPClient",
+    *,
+    previous: MailboxHistory | None = None,
+    include_sent: bool = True,
 ) -> MailboxHistory:
     """Scan INBOX and the Sent folder, read-only, into a MailboxHistory.
+
+    With ``previous`` (an earlier history of the same mailbox), only messages
+    it does not already hold are fetched; read and flagged state always comes
+    fresh from ``UID SEARCH SEEN`` / ``FLAGGED``, which are cheap. A changed
+    UIDVALIDITY means the server renumbered the folder: it is rebuilt.
 
     Leaves the client with INBOX selected again.
     """
@@ -143,47 +155,80 @@ async def build_history(
 
     history = MailboxHistory()
     try:
-        await client.examine_mailbox("INBOX")
+        validity = await client.examine_mailbox("INBOX")
+        known: dict[str, InboxMessage] = {}
+        if previous is not None and previous.inbox_validity in (None, validity):
+            known = previous.messages
+        history.inbox_validity = validity
         uids = await client.search_uids("ALL")
-        for batch in _batches(uids):
-            fetched = await client.fetch_header_fields(batch, ("FROM", "DATE"))
-            for uid, (flags, headers) in fetched.items():
-                history.messages[uid] = InboxMessage(
+        seen = set(await client.search_uids("SEEN"))
+        flagged = set(await client.search_uids("FLAGGED"))
+        new = [u for u in uids if u not in known]
+        fetched: dict[str, InboxMessage] = {}
+        for batch in _batches(new):
+            headers_by_uid = await client.fetch_header_fields(batch, ("FROM", "DATE"))
+            for uid, (_, headers) in headers_by_uid.items():
+                fetched[uid] = InboxMessage(
                     sender=address_of(headers.get("From", "")),
                     date=_parse_date(headers.get("Date", "")),
-                    seen="\\Seen" in flags,
-                    flagged="\\Flagged" in flags,
                 )
-        logger.info("History: %s INBOX messages", len(history.messages))
+        for uid in uids:
+            message = known.get(uid) or fetched.get(uid)
+            if message is not None:
+                history.messages[uid] = message.model_copy(
+                    update={"seen": uid in seen, "flagged": uid in flagged}
+                )
+        logger.info(
+            "History: %s INBOX messages (%s fetched)", len(history.messages), len(new)
+        )
 
         sent = await client.find_sent_mailbox() if include_sent else None
         if sent:
-            await client.examine_mailbox(sent)
-            contacted: Counter[str] = Counter()
-            fields = ("TO", "CC", "BCC", "MESSAGE-ID")
-            for batch in _batches(await client.search_uids("ALL")):
-                for _, headers in (
-                    await client.fetch_header_fields(batch, fields)
-                ).values():
-                    recipients = [
-                        headers.get(k, "") for k in ("To", "Cc", "Bcc") if k in headers
-                    ]
-                    contacted.update(
-                        a.lower() for _, a in getaddresses(recipients) if a
-                    )
-                    history.sent_ids.extend(message_ids(headers.get("Message-ID", "")))
-            history.contacted = dict(contacted)
-            logger.info(
-                "History: %s sent messages to %s addresses (%s)",
-                len(history.sent_ids),
-                len(contacted),
-                sent,
-            )
+            await _add_sent(client, sent, history, previous)
         elif include_sent:
             logger.warning("No Sent folder found: 'contacted' features will be 0")
     finally:
         await client.select_mailbox("INBOX")
     return history
+
+
+async def _add_sent(
+    client: "AsyncIMAPClient",
+    sent: str,
+    history: MailboxHistory,
+    previous: MailboxHistory | None,
+) -> None:
+    """Fill ``contacted`` and ``sent_ids`` from the Sent folder (read-only)."""
+    validity = await client.examine_mailbox(sent)
+    reuse = (
+        previous is not None
+        and previous.sent_validity in (None, validity)
+        # A history without sent_uids cannot tell which messages it counted
+        and (bool(previous.sent_uids) or not previous.contacted)
+    )
+    contacted: Counter[str] = Counter(previous.contacted if reuse and previous else {})
+    sent_ids = list(previous.sent_ids) if reuse and previous else []
+    done = set(previous.sent_uids) if reuse and previous else set()
+    uids = await client.search_uids("ALL")
+    new = [u for u in uids if u not in done]
+    fields = ("TO", "CC", "BCC", "MESSAGE-ID")
+    for batch in _batches(new):
+        for _, headers in (await client.fetch_header_fields(batch, fields)).values():
+            # Only present headers: getaddresses() rejects the lot on an empty one
+            recipients = [headers[k] for k in ("To", "Cc", "Bcc") if headers.get(k)]
+            contacted.update(a.lower() for _, a in getaddresses(recipients) if a)
+            sent_ids.extend(message_ids(headers.get("Message-ID", "")))
+    history.contacted = dict(contacted)
+    history.sent_ids = sent_ids
+    history.sent_uids = sorted(done | set(uids), key=int)
+    history.sent_validity = validity
+    logger.info(
+        "History: %s sent messages to %s addresses (%s, %s fetched)",
+        len(sent_ids),
+        len(contacted),
+        sent,
+        len(new),
+    )
 
 
 def weeks_between(first: datetime | None, last: datetime | None) -> float:

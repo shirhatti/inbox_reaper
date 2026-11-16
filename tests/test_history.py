@@ -83,7 +83,9 @@ class TestParsing:
 class TestBuildHistory:
     def test_reads_inbox_and_sent_read_only(self):
         client = AsyncMock()
-        client.search_uids.side_effect = [["10", "11"], ["90"]]
+        # INBOX: ALL, SEEN, FLAGGED; then Sent: ALL
+        client.search_uids.side_effect = [["10", "11"], ["10"], [], ["90"]]
+        client.examine_mailbox.return_value = "7"
         client.find_sent_mailbox.return_value = "Sent Items"
 
         def header(text: str):
@@ -116,9 +118,63 @@ class TestBuildHistory:
         assert history.messages["10"].seen and not history.messages["11"].seen
         assert history.contacted == {"a@x.example": 1, "c@z.example": 1}
         assert history.sent_ids == ["<s1@me>"]
+        assert (history.inbox_validity, history.sent_uids) == ("7", ["90"])
         # Never a command that could change the mailbox
         assert not client.delete_emails.called
         assert not client.fetch_messages.called
+
+    def update_client(self, validity: str = "7") -> AsyncMock:
+        client = AsyncMock()
+        # INBOX now: 10 (still there, now read), 12 (new); 11 is gone
+        client.search_uids.side_effect = [["10", "12"], ["10"], ["12"], ["90", "91"]]
+        client.examine_mailbox.return_value = validity
+        client.find_sent_mailbox.return_value = "Sent"
+        client.fetch_header_fields.side_effect = [
+            {
+                "12": (
+                    frozenset(),
+                    email.message_from_string("From: new@x.example\n"),
+                )
+            },
+            {"91": (frozenset(), email.message_from_string("To: d@z.example\n"))},
+        ]
+        return client
+
+    def previous(self) -> MailboxHistory:
+        return MailboxHistory(
+            messages=inbox(
+                ("10", "a@x.example", False, False, 3),
+                ("11", "b@y.example", False, False, 2),
+            ),
+            contacted={"a@x.example": 1},
+            sent_ids=["<s1@me>"],
+            sent_uids=["90"],
+            inbox_validity="7",
+            sent_validity="7",
+        )
+
+    def test_update_fetches_only_new_messages_and_refreshes_flags(self):
+        client = self.update_client()
+        history = asyncio.run(build_history(client, previous=self.previous()))
+        fetched = [c.args[0] for c in client.fetch_header_fields.call_args_list]
+        assert fetched == [["12"], ["91"]]
+        assert sorted(history.messages) == ["10", "12"]
+        assert history.messages["10"].seen  # read since the last scan
+        assert history.messages["12"].flagged
+        assert history.contacted == {"a@x.example": 1, "d@z.example": 1}
+        assert history.sent_uids == ["90", "91"]
+
+    def test_changed_uidvalidity_rebuilds(self):
+        client = self.update_client(validity="8")
+        client.search_uids.side_effect = [["10"], [], [], ["90"]]
+        client.fetch_header_fields.side_effect = [
+            {"10": (frozenset(), email.message_from_string("From: z@q.example\n"))},
+            {"90": (frozenset(), email.message_from_string("To: e@z.example\n"))},
+        ]
+        history = asyncio.run(build_history(client, previous=self.previous()))
+        # UID 10 was renumbered: its old sender is not reused
+        assert history.messages["10"].sender == "z@q.example"
+        assert history.contacted == {"e@z.example": 1}
 
     def test_round_trip(self, tmp_path):
         path = tmp_path / "history.json"

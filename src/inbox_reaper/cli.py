@@ -135,6 +135,13 @@ def build_config(
     help="Combiner from 'inbox-reaper train': decides from the feature vector, "
     "sending only contested emails to the AI",
 )
+@click.option(
+    "--history",
+    "history_path",
+    type=click.Path(dir_okay=False),
+    help="Mailbox history file for a combiner trained with one; created if "
+    "missing, then updated incrementally on each run",
+)
 def process(
     config: str | None,
     model: str | None,
@@ -147,6 +154,7 @@ def process(
     whitelist_domain: tuple,
     rules_path: str | None,
     combiner_path: str | None,
+    history_path: str | None,
 ):
     """Process emails through the classification pipeline with LangGraph.
 
@@ -174,6 +182,7 @@ def process(
         "whitelist_domains": list(whitelist_domain) if whitelist_domain else None,
         "rules_path": rules_path,
         "combiner_path": combiner_path,
+        "history_path": history_path,
     }
     config_obj = build_config(config, cli_args)
 
@@ -186,6 +195,7 @@ def process(
     click.echo(f"  Whitelisted domains: {config_obj.whitelist_domains or 'None'}")
     click.echo(f"  Rules: {config_obj.rules_path or 'None'}")
     click.echo(f"  Combiner: {config_obj.combiner_path or 'None'}")
+    click.echo(f"  History: {config_obj.history_path or 'None'}")
 
     # Run the LangGraph pipeline
     try:
@@ -768,13 +778,15 @@ def sample(config, email, count, seed, exclude_path, output):
 @click.option("--config", type=click.Path(exists=True), help="Configuration file")
 @click.option("--email", help="Email address to read")
 @click.option("-o", "--output", default="history.json", show_default=True)
-def history(config, email, output):
+@click.option("--full", is_flag=True, help="Rescan everything instead of updating")
+def history(config, email, output, full):
     """Save your mailbox history for training and evaluation (read-only).
 
     Records the sender, date and read/flagged state of every INBOX message
     and who you have written to (from the Sent folder). Nothing is marked read
-    or changed. The file holds addresses from your mailbox; keep it private.
-    'process' builds a fresh history itself when its combiner needs one.
+    or changed. If OUTPUT exists it is updated: only new messages are fetched
+    and read state is refreshed. The file holds addresses from your mailbox;
+    keep it private.
 
     \b
     Example:
@@ -782,13 +794,9 @@ def history(config, email, output):
     """
     from .langgraph_streaming import read_history  # noqa: PLC0415
 
-    config_obj = build_config(config, {"email": email})
-    result = asyncio.run(read_history(config_obj))
-    result.save(output)
-    click.echo(
-        f"Saved history of {len(result.messages)} INBOX messages and "
-        f"{len(result.contacted)} addresses you have written to -> {output}"
-    )
+    config_obj = build_config(config, {"email": email, "history_path": output})
+    asyncio.run(read_history(config_obj, full=full))
+    click.echo(f"Saved -> {output}")
 
 
 @cli.command()

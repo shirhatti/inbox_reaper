@@ -13,6 +13,7 @@ import random
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Self, TypedDict
 
 import aioimaplib
@@ -525,15 +526,11 @@ async def run_streaming_pipeline(config: Config):
             batch_size=config.batch_size,
         )
 
-        # A combiner trained on mailbox history gets a fresh one (read-only)
+        # A combiner trained on mailbox history gets a fresh one (read-only),
+        # updated incrementally from config.history_path when it exists
         history = None
         if combiner and combiner.needs_history:
-            print("Reading mailbox history (read-only)...")
-            history = await session.run(build_history)
-            print(
-                f"History: {len(history.messages)} INBOX messages, "
-                f"{len(history.contacted)} addresses you have written to"
-            )
+            history = await refresh_history(session, config.history_path)
 
         # Keep about one fetch batch ready while the current one is classified
         prefetch_depth = max(1, min(config.fetch_size, MAX_MESSAGES_PER_FETCH))
@@ -652,10 +649,38 @@ async def run_learning_pipeline(
     )
 
 
-async def read_history(config: Config) -> MailboxHistory:
-    """Build a mailbox history over one read-only IMAP session."""
+def _saved_history(path: str | None) -> MailboxHistory | None:
+    return MailboxHistory.load(path) if path and Path(path).exists() else None
+
+
+async def refresh_history(
+    session: IMAPSession, path: str | None, *, full: bool = False
+) -> MailboxHistory:
+    """Build the mailbox history (read-only), reusing and updating ``path``.
+
+    Only messages the saved history lacks are fetched; read state is always
+    fresh. Without a saved file the whole mailbox is scanned, which takes
+    minutes on a large one.
+    """
+    previous = None if full else _saved_history(path)
+    if previous is not None:
+        print(f"Updating mailbox history from {path} (read-only)...")
+    else:
+        print("Reading the whole mailbox history (read-only, can take minutes)...")
+    history = await session.run(lambda client: build_history(client, previous=previous))
+    if path:
+        history.save(path)
+    print(
+        f"History: {len(history.messages)} INBOX messages, "
+        f"{len(history.contacted)} addresses you have written to"
+    )
+    return history
+
+
+async def read_history(config: Config, *, full: bool = False) -> MailboxHistory:
+    """Build or update the history at ``config.history_path`` (read-only)."""
     async with IMAPSession(config.email) as session:
-        return await session.run(build_history)
+        return await refresh_history(session, config.history_path, full=full)
 
 
 async def sample_inbox(

@@ -32,5 +32,9 @@
     ".pptx"
   ],
 
+  "rules_path": null,
+  "combiner_path": null,
+  "history_path": null,
+
   "dry_run": true
 }
