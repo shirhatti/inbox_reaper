@@ -63,6 +63,14 @@ class Combiner(BaseModel):
             return Decision.KEEP, p
         return None, p
 
+    @property
+    def needs_history(self) -> bool:
+        """Trained with mailbox history: scoring without one would shift every
+        history feature to 0, so callers must supply it."""
+        if "history.available" not in self.feature_names:
+            return False
+        return self.mean[self.feature_names.index("history.available")] > 0
+
     def top_weights(self, n: int = 10) -> list[tuple[str, float]]:
         pairs = zip(self.feature_names, self.weights, strict=True)
         return sorted(pairs, key=lambda p: -abs(p[1]))[:n]

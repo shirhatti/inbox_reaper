@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from .combiner import Combiner, TrainingExample, train
 from .features import TTL, FeatureContext, Lifetime, email_age, extract_features
+from .history import MailboxHistory
 from .rules import RuleSet
 from .state import Config, Decision, Email
 from .text_utils import compact_urls
@@ -280,6 +281,7 @@ def training_examples(
     label_sets: list[dict[str, Label]],
     config: Config,
     rules: RuleSet | None = None,
+    history: MailboxHistory | None = None,
 ) -> list[TrainingExample]:
     """Join samples with labels (earlier label sets take precedence).
 
@@ -291,7 +293,9 @@ def training_examples(
         label = next((s[sample.uid] for s in label_sets if sample.uid in s), None)
         if label is None:
             continue
-        ctx = FeatureContext(config=config, rules=rules, now=sample.sampled_at)
+        ctx = FeatureContext(
+            config=config, rules=rules, now=sample.sampled_at, history=history
+        )
         action = effective_action(label, sample)
         weight = LOSS_WEIGHT[label.loss] if action == Decision.KEEP else 1.0
         examples.append(
@@ -309,8 +313,9 @@ def train_combiner(
     label_sets: list[dict[str, Label]],
     config: Config,
     rules: RuleSet | None = None,
+    history: MailboxHistory | None = None,
 ) -> Combiner:
-    return train(training_examples(samples, label_sets, config, rules))
+    return train(training_examples(samples, label_sets, config, rules, history))
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +371,7 @@ def evaluate(
     config: Config,
     rules: RuleSet | None = None,
     combiner: Combiner | None = None,
+    history: MailboxHistory | None = None,
 ) -> Evaluation:
     """Replay the deterministic stages (and the combiner, if given) on labelled mail.
 
@@ -375,6 +381,8 @@ def evaluate(
     # Deferred: imports LangGraph
     from .langgraph_streaming import classify_deterministic  # noqa: PLC0415
 
+    if combiner is not None and combiner.needs_history and history is None:
+        raise ValueError("this combiner was trained with a mailbox history")
     paths: dict[str, PathStats] = {}
     wrong: list[str] = []
     to_ai = total = delete_labels = 0
@@ -394,7 +402,9 @@ def evaluate(
         if decision is not None:
             verdict, path = decision.decision, decision.reason.value
         elif combiner is not None:
-            ctx = FeatureContext(config=config, rules=rules, now=sample.sampled_at)
+            ctx = FeatureContext(
+                config=config, rules=rules, now=sample.sampled_at, history=history
+            )
             verdict, _ = combiner.decide(extract_features(email, ctx))
             path = "combiner"
         if verdict is None:

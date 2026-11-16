@@ -30,6 +30,7 @@ from .batch_coordinator import BatchCoordinator
 from .combiner import Combiner
 from .credential_helper import get_credentials
 from .features import FeatureContext, check_expiry, describe_features, extract_features
+from .history import MailboxHistory, build_history
 from .imap_client import AsyncIMAPClient, IMAPConnectionError
 from .oauth_flow import refresh_if_expiring
 from .rules import RuleLearner, RuleSet
@@ -158,6 +159,7 @@ class StreamingState(TypedDict):
     rules: RuleSet | None
     ai: "AIClassifier | None"
     combiner: Combiner | None
+    history: MailboxHistory | None
 
 
 async def imap_producer(
@@ -216,6 +218,7 @@ async def imap_producer(
                     "rules": None,
                     "ai": None,
                     "combiner": None,
+                    "history": None,
                 }
             else:
                 logger.warning("Could not fetch email %s, skipping", uid)
@@ -390,6 +393,7 @@ async def classify_email(
     rules: RuleSet | None,
     ai: AIClassifier,
     combiner: Combiner | None = None,
+    history: MailboxHistory | None = None,
 ) -> EmailDecision:
     """Classify one email.
 
@@ -405,7 +409,11 @@ async def classify_email(
     if combiner is None:
         return await ai(email, "")
 
-    features = extract_features(email, FeatureContext(config=config, rules=rules))
+    if combiner.needs_history and history is None:
+        raise ValueError("this combiner was trained with a mailbox history")
+    features = extract_features(
+        email, FeatureContext(config=config, rules=rules, history=history)
+    )
     verdict, p_delete = combiner.decide(features)
     if verdict is not None:
         return EmailDecision(
@@ -432,7 +440,12 @@ async def process_email_node(state: StreamingState) -> StreamingState:
 
     try:
         decision_obj = await classify_email(
-            email, state["config"], state["rules"], ai, state.get("combiner")
+            email,
+            state["config"],
+            state["rules"],
+            ai,
+            state.get("combiner"),
+            state.get("history"),
         )
     except Exception as e:
         logger.exception("Error processing email %s", uid)
@@ -512,6 +525,16 @@ async def run_streaming_pipeline(config: Config):
             batch_size=config.batch_size,
         )
 
+        # A combiner trained on mailbox history gets a fresh one (read-only)
+        history = None
+        if combiner and combiner.needs_history:
+            print("Reading mailbox history (read-only)...")
+            history = await session.run(build_history)
+            print(
+                f"History: {len(history.messages)} INBOX messages, "
+                f"{len(history.contacted)} addresses you have written to"
+            )
+
         # Keep about one fetch batch ready while the current one is classified
         prefetch_depth = max(1, min(config.fetch_size, MAX_MESSAGES_PER_FETCH))
 
@@ -523,6 +546,7 @@ async def run_streaming_pipeline(config: Config):
                         "rules": rules,
                         "ai": batcher.classify,
                         "combiner": combiner,
+                        "history": history,
                     }
                 )
 
@@ -626,6 +650,12 @@ async def run_learning_pipeline(
     return learner.build(
         min_support=min_support, min_agreement=min_agreement, account=config.email
     )
+
+
+async def read_history(config: Config) -> MailboxHistory:
+    """Build a mailbox history over one read-only IMAP session."""
+    async with IMAPSession(config.email) as session:
+        return await session.run(build_history)
 
 
 async def sample_inbox(

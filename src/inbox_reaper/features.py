@@ -24,6 +24,15 @@ from .agents import (
     check_whitelist,
     sender_domain,
 )
+from .history import (
+    InboxMessage,
+    MailboxHistory,
+    SenderStats,
+    log_scale,
+    message_ids,
+    org_domain,
+    weeks_between,
+)
 from .rules import RuleSet
 from .state import Config, Decision, Email, EmailDecision, FilterReason
 from .text_utils import url_domain
@@ -39,6 +48,7 @@ class FeatureContext:
     config: Config
     rules: RuleSet | None = None
     now: datetime = field(default_factory=utcnow)
+    history: MailboxHistory | None = None
 
 
 type Processor = Callable[[Email, FeatureContext], FeatureVector]
@@ -435,6 +445,63 @@ def check_expiry(
 
 
 # ---------------------------------------------------------------------------
+# Mailbox history: how you have treated this sender before
+# ---------------------------------------------------------------------------
+
+
+def _others(
+    stats: SenderStats | None, own: InboxMessage | None
+) -> tuple[int, int, int]:
+    """(count, seen, flagged) for a sender excluding the email itself."""
+    if stats is None:
+        return 0, 0, 0
+    count, seen, flagged = stats.count, stats.seen, stats.flagged
+    if own is not None:
+        count, seen, flagged = count - 1, seen - own.seen, flagged - own.flagged
+    return max(count, 0), max(seen, 0), max(flagged, 0)
+
+
+def history_features(email: Email, ctx: FeatureContext) -> FeatureVector:
+    """Signals from your own mailbox behaviour; all 0 without a history.
+
+    Sender statistics exclude the email being scored, so a sender's only
+    email does not count as "read before" because you opened it.
+    """
+    history = ctx.history
+    if history is None:
+        return {"available": 0.0}
+    address = parseaddr(email.sender)[1].lower()
+    domain = org_domain(address)
+    own = history.messages.get(email.uid)
+    if own is not None and own.sender != address:
+        own = None  # a stale UID (mailbox changed since sampling)
+    stats = history.by_sender.get(address)
+    count, seen, flagged = _others(stats, own)
+    d_count, d_seen, _ = _others(history.by_domain.get(domain), own)
+    weeks = weeks_between(stats.first, stats.last) if stats else 1.0
+    thread = message_ids(
+        email.headers.get("in-reply-to", ""), email.headers.get("references", "")
+    )
+    freemail = domain in _FREEMAIL
+    return {
+        "available": 1.0,
+        "seen": _flag(own and own.seen),
+        "flagged": _flag(own and own.flagged),
+        "sender_messages": log_scale(count, 1000),
+        "sender_new": _flag(count == 0),
+        "sender_read_rate": seen / count if count else 0.0,
+        "sender_never_read": _flag(count >= 3 and seen == 0),
+        "sender_flagged": _flag(flagged),
+        "sender_per_week": min(count / weeks, 7.0) / 7.0 if count else 0.0,
+        "domain_read_rate": d_seen / d_count if d_count else 0.0,
+        "contacted_sender": _flag(address in history.contacted),
+        # Free-mail domains say nothing about the sender (you write to gmail.com)
+        "contacted_domain": _flag(not freemail and domain in history.contacted_domains),
+        "my_thread": _flag(any(i in history.sent_id_set for i in thread)),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
@@ -446,6 +513,7 @@ PROCESSORS: dict[str, Processor] = {
     "content": content_features,
     "rule": rule_features,
     "time": temporal_features,
+    "history": history_features,
 }
 
 
@@ -485,6 +553,10 @@ _DESCRIPTIONS = {
     "content.name_greeting": "greets you by name",
     "content.promo_subject": "promotional subject (sale, % off, offer...)",
     "content.generic_greeting": "generic greeting (dear customer...)",
+    "history.contacted_sender": "you have written to this sender",
+    "history.my_thread": "a thread you took part in",
+    "history.flagged": "you flagged this email",
+    "history.sender_never_read": "you never open this sender's mail",
     "sender.person": "written by a person, not a brand",
     "sender.via_service": "shared by a person through a service",
     "link.tracking_pixel": "contains a tracking pixel",

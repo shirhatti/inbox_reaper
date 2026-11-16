@@ -116,6 +116,51 @@ def parse_fetch_literals(lines: list[Any]) -> dict[str, bytes]:
     return results
 
 
+_FLAGS_RE = re.compile(r"\bFLAGS \(([^)]*)\)")
+_LIST_RE = re.compile(r'\(([^)]*)\)\s+(?:"[^"]*"|NIL)\s+(?:"((?:[^"\\]|\\.)*)"|(\S+))')
+# Fallback names when the server does not mark its Sent folder (RFC 6154)
+_SENT_NAMES = ("Sent Items", "Sent", "[Gmail]/Sent Mail", "Sent Messages")
+
+
+def parse_fetch_flags(lines: list[Any]) -> dict[str, frozenset[str]]:
+    """Map UID -> flags from a UID FETCH response that asked for FLAGS.
+
+    The FLAGS item may come before the literal (in the FETCH line) or after
+    it (in the trailing line), so it is matched in every non-literal line.
+    """
+    flags: dict[str, frozenset[str]] = {}
+    uid: str | None = None
+    for line in lines:
+        if isinstance(line, bytearray):
+            continue
+        text = line.decode(errors="replace") if isinstance(line, bytes) else str(line)
+        match = _FETCH_UID_RE.search(text)
+        if " FETCH " in f" {text} ":
+            uid = match.group(1) if match else None
+        elif match:
+            uid = match.group(1)
+        found = _FLAGS_RE.search(text)
+        if found and uid is not None:
+            flags[uid] = frozenset(found.group(1).split())
+    return flags
+
+
+def parse_sent_mailbox(lines: list[Any]) -> str | None:
+    """The Sent folder from a LIST response: the \\Sent special-use mailbox,
+    else the first conventional name present."""
+    names: list[str] = []
+    for line in lines:
+        text = line.decode(errors="replace") if isinstance(line, bytes) else str(line)
+        match = _LIST_RE.search(text)
+        if not match:
+            continue
+        name = match.group(2) if match.group(2) is not None else match.group(3)
+        if "\\sent" in match.group(1).lower().split():
+            return name
+        names.append(name)
+    return next((n for n in _SENT_NAMES if n in names), None)
+
+
 _AUTH_FAILURE_PATTERNS = (
     "authentication failed",
     "invalid credentials",
@@ -127,6 +172,12 @@ def _require_ok(response: Any, action: str) -> None:
     """Raise IMAPConnectionError unless an IMAP response completed OK."""
     if response.result != "OK":
         raise IMAPConnectionError(f"Failed to {action}: {response.lines}")
+
+
+def _quote(mailbox: str) -> str:
+    """Quote a mailbox name for IMAP ("Sent Items" has a space)."""
+    escaped = mailbox.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def _parse_date(date_str: str) -> datetime:
@@ -280,6 +331,49 @@ class AsyncIMAPClient:
                 info["recent"] = int(line_str.split()[0])
 
         return info
+
+    async def examine_mailbox(self, mailbox: str) -> None:
+        """Open a mailbox read-only (EXAMINE): nothing in it can change."""
+        if not self.client:
+            raise IMAPConnectionError("Not connected to IMAP server")
+        _require_ok(await self.client.examine(_quote(mailbox)), f"examine {mailbox}")
+
+    async def find_sent_mailbox(self) -> str | None:
+        """Name of the Sent folder, or None if the server has none we recognise."""
+        if not self.client:
+            raise IMAPConnectionError("Not connected to IMAP server")
+        response = await self.client.list('""', "*")
+        _require_ok(response, "list mailboxes")
+        return parse_sent_mailbox(response.lines)
+
+    async def fetch_header_fields(
+        self, uids: list[str], fields: tuple[str, ...]
+    ) -> dict[str, tuple[frozenset[str], email.message.Message]]:
+        """Flags and a few header fields for many UIDs, read-only (BODY.PEEK).
+
+        Returns UID -> (flags, parsed header block). UIDs the server omits are
+        missing from the result.
+        """
+        if not self.client:
+            raise IMAPConnectionError("Not connected to IMAP server")
+        if not uids:
+            return {}
+        item = f"BODY.PEEK[HEADER.FIELDS ({' '.join(fields)})]"
+        try:
+            response = await asyncio.wait_for(
+                self.client.uid("fetch", ",".join(uids), f"(UID FLAGS {item})"),
+                timeout=self.timeout,
+            )
+        except TimeoutError as e:
+            raise IMAPConnectionError(
+                f"Timed out after {self.timeout}s fetching {len(uids)} headers"
+            ) from e
+        _require_ok(response, "fetch header fields")
+        flags = parse_fetch_flags(response.lines)
+        return {
+            uid: (flags.get(uid, frozenset()), email.message_from_bytes(raw))
+            for uid, raw in parse_fetch_literals(response.lines).items()
+        }
 
     async def fetch_emails(
         self,

@@ -765,6 +765,33 @@ def sample(config, email, count, seed, exclude_path, output):
 
 
 @cli.command()
+@click.option("--config", type=click.Path(exists=True), help="Configuration file")
+@click.option("--email", help="Email address to read")
+@click.option("-o", "--output", default="history.json", show_default=True)
+def history(config, email, output):
+    """Save your mailbox history for training and evaluation (read-only).
+
+    Records the sender, date and read/flagged state of every INBOX message
+    and who you have written to (from the Sent folder). Nothing is marked read
+    or changed. The file holds addresses from your mailbox; keep it private.
+    'process' builds a fresh history itself when its combiner needs one.
+
+    \b
+    Example:
+        inbox-reaper history --email user@example.com -o history.json
+    """
+    from .langgraph_streaming import read_history  # noqa: PLC0415
+
+    config_obj = build_config(config, {"email": email})
+    result = asyncio.run(read_history(config_obj))
+    result.save(output)
+    click.echo(
+        f"Saved history of {len(result.messages)} INBOX messages and "
+        f"{len(result.contacted)} addresses you have written to -> {output}"
+    )
+
+
+@cli.command()
 @click.argument("samples_path", type=click.Path(exists=True, dir_okay=False))
 @click.option("-o", "--output", default="labels.jsonl", show_default=True)
 @click.option("--labeler", default="human", show_default=True)
@@ -833,14 +860,21 @@ def compare_labels(label_paths, samples_path, show):
 )
 @click.option("--config", type=click.Path(exists=True), help="Configuration file")
 @click.option("--rules", "rules_path", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--history",
+    "history_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Mailbox history from 'inbox-reaper history' (adds history features)",
+)
 @click.option("-o", "--output", default="combiner.json", show_default=True)
-def train_command(samples_path, label_paths, config, rules_path, output):
+def train_command(samples_path, label_paths, config, rules_path, history_path, output):
     """Train the combiner from labelled samples.
 
     Keep-labelled emails are weighted by how bad losing them would be. The
     reported metrics are cross-validated. Use the result with
     'inbox-reaper process --combiner'.
     """
+    from .history import MailboxHistory  # noqa: PLC0415
     from .labeling import load_labels, load_samples, train_combiner  # noqa: PLC0415
     from .rules import RuleSet  # noqa: PLC0415
 
@@ -852,6 +886,7 @@ def train_command(samples_path, label_paths, config, rules_path, output):
         [load_labels(p) for p in label_paths],
         config_obj,
         rules,
+        MailboxHistory.load(history_path) if history_path else None,
     )
     combiner.save(output)
     m = combiner.metrics
@@ -891,9 +926,15 @@ def train_command(samples_path, label_paths, config, rules_path, output):
     type=click.Path(exists=True, dir_okay=False),
     help="Also evaluate the pipeline with this combiner",
 )
+@click.option(
+    "--history",
+    "history_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Mailbox history from 'inbox-reaper history' (adds history features)",
+)
 @click.option("--show", default=15, show_default=True, help="Wrong deletes to list")
 def evaluate_command(
-    samples_path, label_paths, config, rules_path, combiner_path, show
+    samples_path, label_paths, config, rules_path, combiner_path, history_path, show
 ):
     """Delete precision and recall of each deletion path on labelled mail.
 
@@ -902,6 +943,7 @@ def evaluate_command(
     wrong delete is the error that matters.
     """
     from .combiner import Combiner  # noqa: PLC0415
+    from .history import MailboxHistory  # noqa: PLC0415
     from .labeling import evaluate, format_evaluation, load_labels, load_samples  # noqa: PLC0415
     from .rules import RuleSet  # noqa: PLC0415
 
@@ -909,11 +951,13 @@ def evaluate_command(
     rules = RuleSet.load(rules_path) if rules_path else None
     samples = load_samples(samples_path)
     labels = [load_labels(p) for p in label_paths]
+    history = MailboxHistory.load(history_path) if history_path else None
     runs = [evaluate(samples, labels, config_obj, rules)]
     if combiner_path:
-        runs.append(
-            evaluate(samples, labels, config_obj, rules, Combiner.load(combiner_path))
-        )
+        combiner = Combiner.load(combiner_path)
+        if combiner.needs_history and history is None:
+            raise click.UsageError("this combiner needs --history")
+        runs.append(evaluate(samples, labels, config_obj, rules, combiner, history))
     for ev in runs:
         for line in format_evaluation(ev):
             click.echo(line)

@@ -354,7 +354,7 @@ class TestConcurrentPipeline(unittest.IsolatedAsyncioTestCase):
 
 class TestCombinerRouting(unittest.IsolatedAsyncioTestCase):
     def combiner(self, p_delete: float):
-        combiner = MagicMock()
+        combiner = MagicMock(needs_history=False)
         combiner.decide.return_value = (
             Decision.DELETE
             if p_delete >= 0.9
