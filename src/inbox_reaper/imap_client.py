@@ -862,9 +862,12 @@ class AsyncIMAPClient:
             response = await self.client.uid("store", uid_set, "+FLAGS", r"(\Deleted)")
             _require_ok(response, "mark emails as deleted")
 
-            # Expunge to remove from current mailbox
-            # Note: Gmail auto-expunges, so this may be redundant but harmless
-            response = await self.client.expunge()
+            # Expunge only these UIDs when the server allows it (UIDPLUS): a
+            # plain EXPUNGE would also remove anything else flagged \Deleted
+            if self.client.has_capability("UIDPLUS"):
+                response = await self.client.uid("expunge", uid_set)
+            else:
+                response = await self.client.expunge()
             _require_ok(response, "expunge deleted emails")
         except IMAPConnectionError:
             raise

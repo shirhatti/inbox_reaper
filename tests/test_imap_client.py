@@ -202,3 +202,27 @@ class TestFetchMessages:
 
         with pytest.raises(IMAPConnectionError):
             asyncio.run(run())
+
+
+class TestDeleteEmails:
+    def client(self, capabilities: set[str]) -> AsyncIMAPClient:
+        client = AsyncIMAPClient("me@example.com", "token", provider="outlook")
+        imap = AsyncMock()
+        imap.has_capability = lambda c: c in capabilities
+        ok = AsyncMock(result="OK", lines=[])
+        imap.uid.return_value = ok
+        imap.expunge.return_value = ok
+        client.client = imap
+        return client
+
+    def test_expunges_only_our_uids_with_uidplus(self):
+        client = self.client({"UIDPLUS"})
+        assert asyncio.run(client.delete_emails(["5", "9"])) == 2
+        calls = [c.args for c in client.client.uid.call_args_list]
+        assert calls == [("store", "5,9", "+FLAGS", r"(\Deleted)"), ("expunge", "5,9")]
+        client.client.expunge.assert_not_called()
+
+    def test_plain_expunge_without_uidplus(self):
+        client = self.client(set())
+        asyncio.run(client.delete_emails(["5"]))
+        client.client.expunge.assert_awaited_once()

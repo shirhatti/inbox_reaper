@@ -36,6 +36,7 @@ class FilterReason(StrEnum):
     )
     COMBINER = "combiner"  # trained combiner over the feature vector
     AI_CLASSIFIED = "ai_classified"
+    UNDECIDED = "undecided"  # no confident verdict and the AI is off: kept
     NONE = "none"
 
 
@@ -106,6 +107,12 @@ class Config(BaseModel):
     combiner_path: str | None = None
     # Mailbox history file, updated incrementally when the combiner needs one
     history_path: str | None = None
+    # False: emails nothing confidently decides are kept, the AI never runs
+    use_ai: bool = True
+    # Process only these UIDs (a file of UIDs, or a report's delete rows)
+    only_uids_path: str | None = None
+    # Write every decision (uid, date, sender, subject, outcome) as JSONL
+    report_path: str | None = None
 
     # Safety
     dry_run: bool = True

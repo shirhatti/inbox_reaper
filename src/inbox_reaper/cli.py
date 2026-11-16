@@ -142,6 +142,26 @@ def build_config(
     help="Mailbox history file for a combiner trained with one; created if "
     "missing, then updated incrementally on each run",
 )
+@click.option(
+    "--ai/--no-ai",
+    "use_ai",
+    default=None,
+    help="--no-ai: keep whatever the filters and combiner do not confidently "
+    "decide, without loading the model",
+)
+@click.option(
+    "--only-uids",
+    "only_uids_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Process only these UIDs: one per line, or a --report file (its "
+    "delete rows), so a real run can only delete what you reviewed",
+)
+@click.option(
+    "--report",
+    "report_path",
+    type=click.Path(dir_okay=False),
+    help="Write every decision (uid, date, sender, subject, outcome) as JSONL",
+)
 def process(
     config: str | None,
     model: str | None,
@@ -155,6 +175,9 @@ def process(
     rules_path: str | None,
     combiner_path: str | None,
     history_path: str | None,
+    use_ai: bool | None,
+    only_uids_path: str | None,
+    report_path: str | None,
 ):
     """Process emails through the classification pipeline with LangGraph.
 
@@ -183,6 +206,9 @@ def process(
         "rules_path": rules_path,
         "combiner_path": combiner_path,
         "history_path": history_path,
+        "use_ai": use_ai,
+        "only_uids_path": only_uids_path,
+        "report_path": report_path,
     }
     config_obj = build_config(config, cli_args)
 
@@ -196,6 +222,9 @@ def process(
     click.echo(f"  Rules: {config_obj.rules_path or 'None'}")
     click.echo(f"  Combiner: {config_obj.combiner_path or 'None'}")
     click.echo(f"  History: {config_obj.history_path or 'None'}")
+    click.echo(f"  AI: {'on' if config_obj.use_ai else 'off'}")
+    if config_obj.only_uids_path:
+        click.echo(f"  Only UIDs from: {config_obj.only_uids_path}")
 
     # Run the LangGraph pipeline
     try:

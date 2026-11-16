@@ -1,8 +1,11 @@
 import asyncio
+import json
+import tempfile
 import threading
 import time
 import unittest
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from inbox_reaper.imap_client import IMAPConnectionError
@@ -407,3 +410,52 @@ class TestCombinerRouting(unittest.IsolatedAsyncioTestCase):
         decision = await classify_email(MESSAGES["1"], make_config(), None, ai)
         assert decision.decision == Decision.KEEP
         ai.assert_awaited_once_with(MESSAGES["1"], "")
+
+
+def read_report(path: str) -> dict[str, dict]:
+    rows = map(json.loads, Path(path).read_text().splitlines())
+    return {r["uid"]: r for r in rows}
+
+
+def write_text(path: str, text: str) -> None:
+    Path(path).write_text(text)
+
+
+class TestSafeRunOptions(unittest.IsolatedAsyncioTestCase):
+    @patch("inbox_reaper.langgraph_streaming.classify_batch_with_ai")
+    @patch("inbox_reaper.langgraph_streaming.create_imap_client")
+    async def test_no_ai_keeps_undecided_and_reports(self, mock_create_client, mock_ai):
+        code = make_email("3", "Your verification code is 123456", "no-reply@x.example")
+        unsure = make_email("7", "Hello", "Robot <bot@service.example>", "Hi there")
+        mock_create_client.return_value = make_mock_client({"3": code, "7": unsure})
+        with tempfile.TemporaryDirectory() as tmp:
+            report = f"{tmp}/report.jsonl"
+            await run_streaming_pipeline(
+                make_config(dry_run=False, use_ai=False, report_path=report)
+            )
+            rows = read_report(report)
+        mock_ai.assert_not_called()
+        mock_create_client.return_value.delete_emails.assert_awaited_once_with(["3"])
+        assert rows["3"]["operation"] == "delete" and rows["3"]["reason"] == "expired"
+        assert rows["7"]["operation"] == "keep"
+        assert rows["7"]["reason"] == FilterReason.UNDECIDED
+
+    @patch("inbox_reaper.langgraph_streaming.create_imap_client")
+    async def test_only_uids_limits_what_can_be_deleted(self, mock_create_client):
+        old = [
+            make_email(u, "Your verification code is 1", "no-reply@x.example")
+            for u in ("3", "4")
+        ]
+        mock_create_client.return_value = make_mock_client({e.uid: e for e in old})
+        with tempfile.TemporaryDirectory() as tmp:
+            approved = f"{tmp}/approved.jsonl"
+            write_text(
+                approved,
+                '{"uid": "4", "operation": "delete"}\n'
+                '{"uid": "3", "operation": "keep"}\n',
+            )
+            await run_streaming_pipeline(
+                make_config(dry_run=False, use_ai=False, only_uids_path=approved)
+            )
+        # UID 3 would be deleted too, but only UID 4 was approved
+        mock_create_client.return_value.delete_emails.assert_awaited_once_with(["4"])

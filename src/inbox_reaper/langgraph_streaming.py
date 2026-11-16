@@ -8,6 +8,7 @@ classified, so network latency overlaps with (much slower) AI inference.
 
 import asyncio
 import contextlib
+import json
 import logging
 import random
 import time
@@ -65,6 +66,34 @@ _RECONNECTABLE_ERRORS = (
     OSError,
     TimeoutError,
 )
+
+
+def load_uid_list(path: str) -> set[str]:
+    """UIDs from a file: one per line, or JSONL report rows (their delete rows)."""
+    uids: set[str] = set()
+    for raw in Path(path).read_text().splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("{"):
+            row = json.loads(line)
+            if row.get("operation") == "delete":
+                uids.add(str(row["uid"]))
+        else:
+            uids.add(line)
+    return uids
+
+
+def _write_report(path: str, rows: list[dict[str, object]]) -> None:
+    with Path(path).open("w") as f:
+        f.writelines(json.dumps(row, default=str) + "\n" for row in rows)
+
+
+async def keep_undecided(email: Email, signals: str = "") -> EmailDecision:
+    """Stand-in for the AI when it is off: undecided mail is kept."""
+    return EmailDecision(
+        email=email, decision=Decision.KEEP, reason=FilterReason.UNDECIDED
+    )
 
 
 async def create_imap_client(email: str) -> AsyncIMAPClient:
@@ -183,6 +212,11 @@ async def imap_producer(
         return
 
     logger.info("Found %s emails", len(all_uids))
+
+    if config.only_uids_path:
+        allowed = load_uid_list(config.only_uids_path)
+        all_uids = [u for u in all_uids if u in allowed]
+        logger.info("Restricted to %s listed UIDs", len(all_uids))
 
     # Process in chronological order (UIDs are already ascending)
     # Apply max_emails limit if set (take oldest N emails)
@@ -506,7 +540,11 @@ async def run_streaming_pipeline(config: Config):
     logger.info("Starting streaming pipeline...")
 
     stats = {"processed": 0, "deleted": 0, "kept": 0, "errors": 0}
+    reasons: dict[str, int] = {}
+    report: list[dict[str, object]] = []
     started = time.monotonic()
+    if not config.use_ai:
+        print("AI off: emails nothing confidently decides are kept")
 
     async with IMAPSession(config.email) as session:
         # Coordinator for batch deletes (shares the producer's connection)
@@ -541,13 +579,27 @@ async def run_streaming_pipeline(config: Config):
                     {
                         **initial_state,
                         "rules": rules,
-                        "ai": batcher.classify,
+                        "ai": batcher.classify if config.use_ai else keep_undecided,
                         "combiner": combiner,
                         "history": history,
                     }
                 )
 
                 op = result.get("operation")
+                key = f"{op}:{result.get('reason')}"
+                reasons[key] = reasons.get(key, 0) + 1
+                if config.report_path:
+                    email = result["email"]
+                    report.append(
+                        {
+                            "uid": result["email_uid"],
+                            "operation": op,
+                            "reason": result.get("reason"),
+                            "date": email.date.isoformat(),
+                            "sender": email.sender,
+                            "subject": email.subject,
+                        }
+                    )
                 if op == "delete":
                     await batch_coordinator.add(result["email_uid"])
                     stats["deleted"] += 1
@@ -576,6 +628,10 @@ async def run_streaming_pipeline(config: Config):
         # Flush remaining deletes
         await batch_coordinator.flush()
 
+    if config.report_path:
+        _write_report(config.report_path, report)
+        print(f"Report of {len(report)} decisions -> {config.report_path}")
+
     elapsed = time.monotonic() - started
     logger.info("Pipeline complete.")
     print("\n" + "=" * 40)
@@ -586,6 +642,8 @@ async def run_streaming_pipeline(config: Config):
     print(f"Total Kept:      {stats['kept']}")
     print(f"Errors:          {stats['errors']}")
     print(f"Elapsed:         {elapsed:.1f}s")
+    for key, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
+        print(f"  {key:28} {count}")
     print("=" * 40)
 
 

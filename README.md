@@ -163,6 +163,24 @@ Whether history helps depends on your mailbox: compare `train` with and
 without `--history` on the same labels. If you keep everything marked read,
 the read-state signals carry no information.
 
+## Deleting safely: review, then delete exactly what you approved
+
+```bash
+# 1. Dry run: nothing changes; every decision goes to the report
+inbox-reaper process --email user@outlook.com --combiner combiner.json --no-ai \
+  --max-emails 2000 --report report.jsonl
+
+# 2. Read the report's delete rows
+
+# 3. Real run limited to the reviewed deletes: an email not approved in the
+#    report can't be deleted, and each is re-checked before it goes
+inbox-reaper process --email user@outlook.com --combiner combiner.json --no-ai \
+  --only-uids report.jsonl --no-dry-run
+```
+
+On servers with UIDPLUS (Gmail, Outlook) the expunge removes only the deleted
+UIDs, never other messages that happen to be flagged `\Deleted`.
+
 ## Learned rules
 
 `learn` classifies your inbox read-only and writes sender and domain rules you
@@ -253,6 +271,9 @@ See `config.example.yaml` for every option.
 | `--rules FILE` | | Rules from `learn` |
 | `--combiner FILE` | | Combiner from `train` |
 | `--history FILE` | | Mailbox history for a combiner trained with one (created if missing, then updated) |
+| `--ai/--no-ai` | on | `--no-ai` keeps whatever the filters and combiner don't confidently decide, without loading the model |
+| `--report FILE` | | Write every decision (uid, date, sender, subject, outcome, reason) as JSONL |
+| `--only-uids FILE` | | Process only these UIDs: one per line, or a `--report` file's delete rows |
 
 ## Performance
 
