@@ -25,7 +25,9 @@ from inbox_reaper.text_utils import (
     compact_urls,
     html_structure,
     real_url,
+    strip_css,
     strip_html,
+    strip_mime_preamble,
     truncate_symmetric,
     url_domain,
 )
@@ -325,3 +327,28 @@ class TestContentFeatures:
         greeted = make_email(body="Hi Jane, your order shipped")
         ctx = FeatureContext(config=config, now=NOW)
         assert content_features(greeted, ctx)["name_greeting"] == 1.0
+
+
+class TestLeakedMarkup:
+    def test_strip_css_removes_rules_and_media_blocks(self):
+        text = (
+            "Read online.\n@media only screen { html { min-height: 100%; } "
+            "h2 a:hover { color: #333; } }\nspan {font-family: Arial !important;}\n"
+            "Hi there, your account was updated."
+        )
+        assert strip_css(text).split() == (
+            ["Read", "online.", "Hi", "there,", "your", "account", "was", "updated."]
+        )
+
+    def test_strip_css_keeps_prose_and_code(self):
+        prose = "PayByPhone Parking Receipt\nTotal: $4.50; thanks {see below}"
+        assert strip_css(prose) == prose
+        code = "> {\n- yield return new Setting(Name, Size);\n}"
+        assert strip_css(code) == code
+        glued = "Parking Receipt .header {color: red;}"
+        assert strip_css(glued).strip() == "Parking Receipt"
+
+    def test_strip_mime_preamble(self):
+        text = "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\nInformed Delivery"
+        assert strip_mime_preamble(text) == "Informed Delivery"
+        assert strip_mime_preamble("Content: great\n\nmore") == "Content: great\n\nmore"

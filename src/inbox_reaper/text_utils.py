@@ -16,6 +16,29 @@ _URL_RE = re.compile(r"https?://[^\s<>\"'\])]+")
 _INVISIBLE_RE = re.compile(
     "[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u2060-\u2064\ufeff]"
 )
+# CSS that leaked into text: plain parts generated from HTML keep the <style>
+# contents. Only blocks of "property: value;" count, so code in text survives.
+_CSS_AT_RULE_RE = re.compile(
+    r"@(media|font-face|supports|page|keyframes|-[a-z-]+)[^{};]*"
+    r"\{(?:[^{}]|\{[^{}]*\})*\}|@(import|charset)[^;{}]*;",
+    re.IGNORECASE,
+)
+# A selector made of CSS syntax only (lowercase tags, .class, #id, [attr],
+# :pseudo), so prose before a rule ("Parking Receipt body{...}") is kept
+_CSS_COMPOUND = (
+    r"(?=[a-z*.#\[:])(?:[a-z][a-z0-9-]*|\*)?"
+    r"(?:[.#][\w-]+|\[[^\]\n]*\]|::?[\w-]+(?:\([^)\n]*\))?)*"
+)
+_CSS_RULE_RE = re.compile(
+    rf"(?<![\w.#\[:-]){_CSS_COMPOUND}"
+    rf"(?:\s*[>+~,]\s*{_CSS_COMPOUND}|[ \t]+{_CSS_COMPOUND})*"
+    r"\s*\{\s*(?:[-a-zA-Z]+\s*:[^;{}]*;\s*)*[-a-zA-Z]+\s*:[^;{}]*;?\s*\}"
+)
+# A MIME header block at the start of a part's text (some senders nest one)
+_MIME_PREAMBLE_RE = re.compile(
+    r"\A\s*(?:(?:content-[\w-]+|mime-version):[^\n]*\n(?:[ \t][^\n]*\n)*)+\r?\n",
+    re.IGNORECASE,
+)
 _SAFELINKS_HOST = "safelinks.protection.outlook.com"
 # Upper bound on links kept per email (feature extraction only needs a sample)
 MAX_LINKS = 100
@@ -140,6 +163,19 @@ def remove_base64_images(text: str) -> str:
     return _BASE64_IMAGE_RE.sub("", text)
 
 
+def strip_css(text: str) -> str:
+    """Remove CSS rules and @-blocks (e.g. ``@media``) that leaked into text."""
+    text = _CSS_AT_RULE_RE.sub("", text)
+    while (stripped := _CSS_RULE_RE.sub("", text)) != text:
+        text = stripped
+    return text
+
+
+def strip_mime_preamble(text: str) -> str:
+    """Drop a MIME header block that a sender left at the start of a part."""
+    return _MIME_PREAMBLE_RE.sub("", text.replace("\r\n", "\n"), count=1)
+
+
 def strip_html(text: str) -> str:
     """Strip HTML tags and extract plain text content.
 
@@ -156,9 +192,9 @@ def strip_html(text: str) -> str:
     # Remove base64 encoded images first (they bloat the text)
     text = _INVISIBLE_RE.sub("", remove_base64_images(text))
 
-    # If text doesn't contain HTML tags, return as-is
+    # If text doesn't contain HTML tags, only drop leaked CSS
     if "<" not in text:
-        return text
+        return strip_css(text)
 
     # Parse HTML and extract text
     extractor = HTMLTextExtractor()
@@ -173,7 +209,7 @@ def strip_html(text: str) -> str:
     plain_text = html.unescape(plain_text)
 
     # Normalize whitespace: replace multiple spaces/tabs with single space
-    plain_text = _HSPACE_RE.sub(" ", plain_text)
+    plain_text = _HSPACE_RE.sub(" ", strip_css(plain_text))
 
     # Preserve paragraph breaks but remove excessive newlines (more than 2)
     plain_text = _BLANK_LINES_RE.sub("\n\n", plain_text)

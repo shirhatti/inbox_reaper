@@ -135,6 +135,23 @@ class TestMessageParsing:
         assert body.endswith("Unsubscribe")
         assert len(body) <= MAX_BODY_CHARS
 
+    def test_blank_plain_part_falls_back_to_html(self):
+        msg = EmailMessage()
+        msg.set_content("\r\n")
+        msg.add_alternative("<p>The schedule is here</p>", subtype="html")
+        body = make_client()._extract_body(email.message_from_bytes(msg.as_bytes()))
+        assert body == "The schedule is here"
+
+    def test_nested_mime_headers_and_css_are_dropped(self):
+        msg = EmailMessage()
+        msg.set_content(
+            "Content-Type: text/plain; charset=UTF-8\r\n"
+            "Content-Transfer-Encoding: 7bit\r\n\r\n"
+            "span {font-family: Arial !important;}\nToday's Deliveries"
+        )
+        body = make_client()._extract_body(email.message_from_bytes(msg.as_bytes()))
+        assert body.strip() == "Today's Deliveries"
+
     def test_respects_declared_charset(self):
         msg = EmailMessage()
         msg.set_content("Grüße", charset="iso-8859-1", cte="8bit")

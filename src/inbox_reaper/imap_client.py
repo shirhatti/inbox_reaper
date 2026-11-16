@@ -21,7 +21,13 @@ from typing import Any, Self
 import aioimaplib
 
 from .state import Email
-from .text_utils import MAX_LINKS, find_urls, html_structure, truncate_symmetric
+from .text_utils import (
+    MAX_LINKS,
+    find_urls,
+    html_structure,
+    strip_mime_preamble,
+    truncate_symmetric,
+)
 from .timeutil import to_utc, utcnow
 
 logger = logging.getLogger(__name__)
@@ -485,7 +491,9 @@ class AsyncIMAPClient:
     def _extract_body(self, msg: email.message.Message) -> str:
         """Extract email body from message as plain text.
 
-        Prefers text/plain, falls back to text/html (stripped to text), and
+        Prefers text/plain, falls back to text/html (stripped to text) when
+        the plain part is missing or blank, drops a MIME header block some
+        senders leave at the start of a part, and
         truncates symmetrically so both the start and the footer are kept.
 
         Args:
@@ -505,17 +513,18 @@ class AsyncIMAPClient:
                     if part.get_content_disposition() == "attachment":
                         continue
                     try:
-                        body = self._decode_part(part)
+                        body = strip_mime_preamble(self._decode_part(part))
                     except Exception:
                         continue
-                    if body:
+                    if body.strip():
                         break
+                    body = ""  # whitespace-only part: try the next one
                 if body:
                     break
         else:
             # Not multipart - get payload directly
             try:
-                body = self._decode_part(msg)
+                body = strip_mime_preamble(self._decode_part(msg))
             except Exception:
                 body = str(msg.get_payload())
 
